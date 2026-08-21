@@ -1,38 +1,34 @@
 --!strict
--- Kinetix Authentication & Session Router (Luau Strict Mode)
 
+local net = require("@lute/net")
 local types = require("../types")
 local builder = require("../response_builder")
 
-local function handleAuthRoute(path: string, method: string, identityUrl: string): types.Response?
-    -- User / Courier Login (POST /api/v1/auth/login)
-    if path == "/api/v1/auth/login" or path == "/api/v1/auth/login/" then
-        local targetUrl: string = identityUrl .. "/api/auth/login"
-        local body: string = '{"gateway":"kinetix-api-gateway","service":"identity-service","route":"auth-login","method":"' .. method .. '","upstream":"' .. targetUrl .. '"}'
-        return builder.buildJsonResponse(200, body, { ["X-Kinetix-Upstream"] = targetUrl })
-    end
+local function handleAuthRoute(path: string, method: string, identityUrl: string, req: types.Request): types.Response?
+    if path == "/api/v1/auth/login" or path == "/api/v1/auth/register" then
+        local targetPath: string = string.gsub(path, "^/api/v1/auth", "/api/auth")
+        local targetUrl: string = identityUrl .. targetPath
+        
+        local success, res = pcall(function()
+            return net.request({
+                url = targetUrl,
+                method = method,
+                headers = req.headers or {},
+                body = req.body or ""
+            })
+        end)
 
-    -- User / Courier Registration (POST /api/v1/auth/register)
-    if path == "/api/v1/auth/register" or path == "/api/v1/auth/register/" then
-        local targetUrl: string = identityUrl .. "/api/auth/register"
-        local body: string = '{"gateway":"kinetix-api-gateway","service":"identity-service","route":"auth-register","method":"' .. method .. '","upstream":"' .. targetUrl .. '"}'
-        return builder.buildJsonResponse(201, body, { ["X-Kinetix-Upstream"] = targetUrl })
+        if success and res then
+            return {
+                status = res.status or 200,
+                headers = res.headers or { ["Content-Type"] = "application/json" },
+                body = res.body or ""
+            }
+        else
+            local errorJson: string = '{"error":"Identity Service Unavailable","target":"' .. targetUrl .. '"}'
+            return builder.buildJsonResponse(503, errorJson)
+        end
     end
-
-    -- User Profile Management (/api/v1/users/...)
-    if string.find(path, "^/api/v1/users/") then
-        local targetUrl: string = identityUrl .. string.gsub(path, "^/api/v1", "/api")
-        local body: string = '{"gateway":"kinetix-api-gateway","service":"identity-service","route":"user-profile","method":"' .. method .. '","upstream":"' .. targetUrl .. '"}'
-        return builder.buildJsonResponse(200, body, { ["X-Kinetix-Upstream"] = targetUrl })
-    end
-
-    -- Seller Onboarding (/api/v1/sellers/...)
-    if string.find(path, "^/api/v1/sellers/") then
-        local targetUrl: string = identityUrl .. string.gsub(path, "^/api/v1", "/api")
-        local body: string = '{"gateway":"kinetix-api-gateway","service":"identity-service","route":"seller-onboarding","method":"' .. method .. '","upstream":"' .. targetUrl .. '"}'
-        return builder.buildJsonResponse(200, body, { ["X-Kinetix-Upstream"] = targetUrl })
-    end
-
     return nil
 end
 

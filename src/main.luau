@@ -1,12 +1,14 @@
 --!strict
 -- Kinetix API Gateway Engine (Luau Strict Type System & Lute Runtime)
--- Modular Dispatcher & Orchestrator for REST, WebSockets, SSE Streaming, and Auth routes.
+-- Modular Reverse-Proxy Dispatcher & Orchestrator for REST, WebSockets, SSE Streaming, Rate Limiting & JWT Auth Verification.
 
 local net = require("@lute/net")
 local types = require("./types")
 local config: types.GatewayConfig = require("./config")
 local builder = require("./response_builder")
 
+local rateLimitMiddleware = require("./middleware/rate_limit_middleware")
+local authMiddleware = require("./middleware/auth_middleware")
 local healthRouter = require("./routes/health_router")
 local authRouter = require("./routes/auth_router")
 local catalogRouter = require("./routes/catalog_router")
@@ -22,7 +24,7 @@ local WAREHOUSE_URL: string = config.warehouse_service_url
 local MATCHING_URL: string = config.matching_service_url
 
 print("==================================================")
-print("⚡ Kinetix API Gateway (Complete Modular Engine)")
+print("⚡ Kinetix API Gateway (Reverse-Proxy Engine)")
 print("Public Port:         " .. tostring(PORT))
 print("Identity Service:    " .. IDENTITY_URL)
 print("Catalog Service:     " .. CATALOG_URL)
@@ -40,35 +42,47 @@ local function handleRequest(req: types.Request): types.Response
         return builder.buildJsonResponse(204, "")
     end
 
-    -- 1. Health Router
+    -- 1. Memory-Leak Free Rate Limiting Guard
+    local isAllowed: boolean, rateLimitResponse: types.Response?, limit: number, remaining: number = rateLimitMiddleware.checkRateLimit(req)
+    if not isAllowed and rateLimitResponse then
+        return rateLimitResponse
+    end
+
+    -- 2. Health Router (Public)
     local healthRes: types.Response? = healthRouter.handleHealth(path, PORT)
     if healthRes then return healthRes end
 
-    -- 2. Auth & Identity Router (Login / Register / Profile / Seller Onboarding)
-    local authRes: types.Response? = authRouter.handleAuthRoute(path, method, IDENTITY_URL)
+    -- 3. Auth & Identity Router (Login & Register Reverse Proxy)
+    local authRes: types.Response? = authRouter.handleAuthRoute(path, method, IDENTITY_URL, req)
     if authRes then return authRes end
 
-    -- 3. WebSocket Upgrade Router
+    -- 4. Centralized JWT Token Authentication Guard (Validates with Identity Service)
+    local isAuthenticated: boolean, authErrorResponse: types.Response?, userId: string?, userRole: string? = authMiddleware.verifyAuthentication(req, IDENTITY_URL)
+    if not isAuthenticated and authErrorResponse then
+        return authErrorResponse
+    end
+
+    -- 5. WebSocket Upgrade Router
     local wsRes: types.Response? = websocketRouter.handleWebSocketRoute(path, headersMap, MATCHING_URL)
     if wsRes then return wsRes end
 
-    -- 4. SSE Stream Router
-    local sseRes: types.Response? = sseRouter.handleSseRoute(path, MATCHING_URL)
+    -- 6. SSE Stream Router
+    local sseRes: types.Response? = sseRouter.handleSseRoute(path, MATCHING_URL, req)
     if sseRes then return sseRes end
 
-    -- 5. Catalog Service Router
-    local catalogRes: types.Response? = catalogRouter.handleCatalogRoute(path, method, CATALOG_URL)
+    -- 7. Catalog Service Router (Reverse Proxy)
+    local catalogRes: types.Response? = catalogRouter.handleCatalogRoute(path, method, CATALOG_URL, req)
     if catalogRes then return catalogRes end
 
-    -- 6. Warehouse Service Router
-    local warehouseRes: types.Response? = warehouseRouter.handleWarehouseRoute(path, method, WAREHOUSE_URL)
+    -- 8. Warehouse Service Router (Reverse Proxy)
+    local warehouseRes: types.Response? = warehouseRouter.handleWarehouseRoute(path, method, WAREHOUSE_URL, req)
     if warehouseRes then return warehouseRes end
 
-    -- 7. Matching Service Router
-    local matchingRes: types.Response? = matchingRouter.handleMatchingRoute(path, method, MATCHING_URL)
+    -- 9. Matching Service Router (Reverse Proxy)
+    local matchingRes: types.Response? = matchingRouter.handleMatchingRoute(path, method, MATCHING_URL, req)
     if matchingRes then return matchingRes end
 
-    -- 8. 404 Fallback
+    -- 10. 404 Fallback
     local notFoundJson: string = '{"error":"Public route not found on Kinetix API Gateway","path":"' .. path .. '"}'
     return builder.buildJsonResponse(404, notFoundJson)
 end

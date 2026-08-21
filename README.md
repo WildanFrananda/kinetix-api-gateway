@@ -1,49 +1,82 @@
 # 🛡️ Kinetix API Gateway (`kinetix-api-gateway`)
 
-High-performance public API Gateway built on **Luau** (Fast typed Lua scripting engine) and **Lute Runtime** inside Docker. Supports REST APIs, Authentication, WebSockets (Phoenix Channels), and Server-Sent Events (SSE).
+High-performance public API Gateway built on **Luau** (Fast typed Lua scripting engine in `--!strict` static mode) and **Lute Runtime** inside Docker. Serves as the single public entrypoint for REST APIs, WebSockets (Phoenix Channels), Server-Sent Events (SSE), **Memory-Leak-Free Rate Limiting Guard**, **Real HTTP Reverse-Proxy Forwarding**, and **Centralized JWT Authentication Verification**.
 
 ---
 
-## 🏛️ Architecture & Protocol Routing Matrix
+## 🏛️ Architecture & Resolved Audit Fixes
 
-Acts as the single public entrypoint for all web & mobile clients, reverse-proxying HTTP REST requests, WebSockets, and Server-Sent Events (SSE) streaming:
-
-### 1. Gateway Health Check
-- `GET /health` ➔ Gateway status check (`200 OK`).
-
-### 2. Authentication & Session Routes
-- `POST /api/v1/auth/login` ➔ User & Courier login authentication.
-- `POST /api/v1/auth/register` ➔ New user & courier registration.
-
-### 3. Catalog Service Routes (`kinetix-catalog-service` Port `:8000`)
-- `GET /api/v1/products/` ➔ Proxy to Catalog listing & search (`/api/products/`).
-- `GET /api/v1/products/{sku}/` ➔ Proxy to Catalog product detail & bin stock (`/api/products/{sku}/`).
-- `POST /api/v1/cart/reserve/` ➔ Proxy to Cart inventory stock reservation (`/api/cart/reserve/`).
-- `POST /api/v1/checkout/` ➔ Proxy to Order checkout & gRPC OMS dispatch (`/api/orders/checkout/`).
-
-### 4. Warehouse Service Routes (`kinetix-warehouse-service` Port `:3000`)
-- `GET /api/v1/warehouse/orders/` ➔ Proxy to Warehouse order fulfillment status.
-- `GET /api/v1/warehouse/inventory/` ➔ Proxy to Warehouse bin physical inventory.
-- `POST /api/v1/warehouse/returns/` ➔ Proxy to Customer return processing.
-
-### 5. Matching Service Routes (`kinetix-matching-service` Port `:4000`)
-- `GET /api/v1/matching/couriers/` ➔ Proxy to Active courier fleet query.
-- `GET /api/v1/matching/dispatches/` ➔ Proxy to Delivery dispatch status & ETAs.
-- `GET /api/v1/matching/telemetry/stream` ➔ **SSE (Server-Sent Events)** real-time GPS coordinate stream.
-- `WS /ws/v1/matching/socket` ➔ **WebSocket Connection Upgrade (`101 Switching Protocols`)** for Phoenix Channels bidirectional courier location streaming.
+1. **Real HTTP Reverse Proxy Forwarding**:
+   - `auth_router.luau`, `catalog_router.luau`, `warehouse_router.luau`, and `matching_router.luau` perform **real HTTP request proxying** via `@lute/net` to downstream microservices (`:5000`, `:8000`, `:3000`, `:4000`).
+2. **Real JWT Token Signature Validation (`auth_middleware.luau`)**:
+   - Dynamically validates `Authorization: Bearer <token>` against **`kinetix-identity-service`** (`/api/auth/validate`) and injects authenticated user headers (`X-User-Id`, `X-User-Role`) to downstream services.
+3. **Real SSE & WebSocket Connection Upgrades**:
+   - `sse_router.luau` forwards real HTTP Event-Stream connections.
+   - `websocket_router.luau` performs standard HTTP `101 Switching Protocols` connection upgrade handshake (`WS /ws/v1/matching/socket`) to `kinetix-matching-service`.
+4. **Memory-Leak-Free Rate Limiter (`rate_limit_middleware.luau`)**:
+   - Implements sliding window rate limiting with **automatic TTL garbage collection routine** to evict stale IP buckets every 5 minutes.
+5. **Strict Static Type Safety**: 100% `--!strict` static type annotations in Luau.
 
 ---
 
-## 📦 Package Management
+## 📡 Protocol Routing & Security Matrix
 
-Luau package management is configured using **Pesde** (`pesde.toml`) and **Wally** (`wally.toml`):
+### 1. Gateway Health Check & Auth Routes (Public)
 
-- **Pesde**: Modern Luau package manager manifest (`pesde.toml`).
-- **Wally**: Community Luau package registry manifest (`wally.toml`).
+| Method | Public Gateway Path | Downstream Target Service | Auth Required | Rate Limit Window | Description |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `GET` | `/health` | Gateway Engine | No | Bypass | Gateway status check (`200 OK`) |
+| `POST` | `/api/v1/auth/login` | `kinetix-identity-service` (`:5000`) | No | 10 req / 60s | Authenticate user & issue signed JWT |
+| `POST` | `/api/v1/auth/register` | `kinetix-identity-service` (`:5000`) | No | 10 req / 60s | Register new user or courier |
+
+### 2. User & Merchant Profile Routes (Protected)
+
+| Method | Public Gateway Path | Downstream Target Service | Auth Required | Rate Limit Window | Description |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `GET` | `/api/v1/users/{id}/profile` | `kinetix-identity-service` (`:5000`) | **Yes (JWT)** | 100 req / 60s | Fetch user profile and address |
+| `PUT` | `/api/v1/users/{id}/profile` | `kinetix-identity-service` (`:5000`) | **Yes (JWT)** | 100 req / 60s | Update user profile and address |
+| `POST` | `/api/v1/sellers/{id}/onboard` | `kinetix-identity-service` (`:5000`) | **Yes (JWT)** | 100 req / 60s | Onboard new merchant store |
+
+### 3. Product Catalog Routes (`kinetix-catalog-service` :8000)
+
+| Method | Public Gateway Path | Downstream Target Service | Auth Required | Rate Limit Window | Description |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `GET` | `/api/v1/products/` | `kinetix-catalog-service` (`:8000`) | No | 100 req / 60s | Browse product catalog & search |
+| `GET` | `/api/v1/products/{sku}/` | `kinetix-catalog-service` (`:8000`) | No | 100 req / 60s | Product detail & bin stock check |
+| `POST` | `/api/v1/cart/reserve/` | `kinetix-catalog-service` (`:8000`) | **Yes (JWT)** | 100 req / 60s | Reserve inventory stock for cart |
+| `POST` | `/api/v1/checkout/` | `kinetix-catalog-service` (`:8000`) | **Yes (JWT)** | 100 req / 60s | Process order checkout |
 
 ---
 
-## ⚡ Local Setup with Docker (Step-by-Step)
+## 📂 Modular File Directory Structure (Luau `--!strict`)
+
+```
+kinetix-api-gateway/
+├── src/
+│   ├── main.luau                       # Main Gateway Reverse-Proxy Dispatcher
+│   ├── types.luau                      # Strict Luau Type Declarations
+│   ├── config.luau                     # Dynamic Environment Configuration
+│   ├── response_builder.luau           # HTTP JSON & Status Response Builder
+│   ├── middleware/
+│   │   ├── rate_limit_middleware.luau  # TTL Memory-Leak Free Rate Limiter
+│   │   └── auth_middleware.luau        # Centralized JWT Validation Guard
+│   └── routes/                         # Isolated Reverse-Proxy Route Modules
+│       ├── health_router.luau
+│       ├── auth_router.luau
+│       ├── catalog_router.luau
+│       ├── warehouse_router.luau
+│       ├── matching_router.luau
+│       ├── websocket_router.luau
+│       └── sse_router.luau
+├── pesde.toml                          # Pesde Package Manifest
+├── wally.toml                          # Wally Package Manifest
+├── Dockerfile                          # Luau / Lute Docker Multi-Stage Build
+└── docker-compose.yml                  # Gateway Service Manifest (Port 8080)
+```
+
+---
+
+## ⚡ Local Setup & Docker Execution
 
 ```bash
 # 1. Navigate to Gateway directory
@@ -52,6 +85,6 @@ cd kinetix-api-gateway
 # 2. Build & Run Docker Container
 docker-compose up --build -d
 
-# 3. Test Health Check Endpoint
+# 3. Test Gateway Health Check Endpoint
 curl http://localhost:8080/health
 ```

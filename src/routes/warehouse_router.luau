@@ -1,13 +1,33 @@
 --!strict
 
+local net = require("@lute/net")
 local types = require("../types")
 local builder = require("../response_builder")
 
-local function handleWarehouseRoute(path: string, method: string, warehouseUrl: string): types.Response?
-    if string.find(path, "^/api/v1/warehouse") then
-        local targetUrl: string = warehouseUrl .. string.gsub(path, "^/api/v1/warehouse", "/api")
-        local body: string = '{"gateway":"kinetix-api-gateway","service":"warehouse-service","route":"warehouse-api","method":"' .. method .. '","upstream":"' .. targetUrl .. '"}'
-        return builder.buildJsonResponse(200, body, { ["X-Kinetix-Upstream"] = targetUrl })
+local function handleWarehouseRoute(path: string, method: string, warehouseUrl: string, req: types.Request): types.Response?
+    if string.find(path, "^/api/v1/warehouse/") then
+        local targetPath: string = string.gsub(path, "^/api/v1/warehouse", "/api/v1")
+        local targetUrl: string = warehouseUrl .. targetPath
+        
+        local success, res = pcall(function()
+            return net.request({
+                url = targetUrl,
+                method = method,
+                headers = req.headers or {},
+                body = req.body or ""
+            })
+        end)
+
+        if success and res then
+            return {
+                status = res.status or 200,
+                headers = res.headers or { ["Content-Type"] = "application/json" },
+                body = res.body or ""
+            }
+        else
+            local errorJson: string = '{"error":"Warehouse Service Unavailable","target":"' .. targetUrl .. '"}'
+            return builder.buildJsonResponse(503, errorJson)
+        end
     end
     return nil
 end

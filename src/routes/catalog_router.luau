@@ -1,37 +1,34 @@
 --!strict
 
+local net = require("@lute/net")
 local types = require("../types")
 local builder = require("../response_builder")
 
-local function handleCatalogRoute(path: string, method: string, catalogUrl: string): types.Response?
-    -- Product Catalog Listing (GET /api/v1/products/)
-    if path == "/api/v1/products" or path == "/api/v1/products/" or string.find(path, "^/api/v1/products%?") then
-        local targetUrl: string = catalogUrl .. string.gsub(path, "^/api/v1", "/api")
-        local body: string = '{"gateway":"kinetix-api-gateway","service":"catalog-service","route":"catalog-list","method":"' .. method .. '","upstream":"' .. targetUrl .. '"}'
-        return builder.buildJsonResponse(200, body, { ["X-Kinetix-Upstream"] = targetUrl })
-    end
+local function handleCatalogRoute(path: string, method: string, catalogUrl: string, req: types.Request): types.Response?
+    if string.find(path, "^/api/v1/products") or string.find(path, "^/api/v1/cart/") or string.find(path, "^/api/v1/checkout") then
+        local targetPath: string = string.gsub(path, "^/api/v1", "/api")
+        local targetUrl: string = catalogUrl .. targetPath
+        
+        local success, res = pcall(function()
+            return net.request({
+                url = targetUrl,
+                method = method,
+                headers = req.headers or {},
+                body = req.body or ""
+            })
+        end)
 
-    -- Product Detail & Stock (GET /api/v1/products/{sku}/)
-    if string.find(path, "^/api/v1/products/") then
-        local targetUrl: string = catalogUrl .. string.gsub(path, "^/api/v1", "/api")
-        local body: string = '{"gateway":"kinetix-api-gateway","service":"catalog-service","route":"catalog-detail","method":"' .. method .. '","upstream":"' .. targetUrl .. '"}'
-        return builder.buildJsonResponse(200, body, { ["X-Kinetix-Upstream"] = targetUrl })
+        if success and res then
+            return {
+                status = res.status or 200,
+                headers = res.headers or { ["Content-Type"] = "application/json" },
+                body = res.body or ""
+            }
+        else
+            local errorJson: string = '{"error":"Catalog Service Unavailable","target":"' .. targetUrl .. '"}'
+            return builder.buildJsonResponse(503, errorJson)
+        end
     end
-
-    -- Cart Stock Reservation (POST /api/v1/cart/reserve/)
-    if path == "/api/v1/cart/reserve" or path == "/api/v1/cart/reserve/" then
-        local targetUrl: string = catalogUrl .. "/api/cart/reserve/"
-        local body: string = '{"gateway":"kinetix-api-gateway","service":"catalog-service","route":"cart-reserve","method":"' .. method .. '","upstream":"' .. targetUrl .. '"}'
-        return builder.buildJsonResponse(200, body, { ["X-Kinetix-Upstream"] = targetUrl })
-    end
-
-    -- Order Checkout (POST /api/v1/checkout/)
-    if path == "/api/v1/checkout" or path == "/api/v1/checkout/" then
-        local targetUrl: string = catalogUrl .. "/api/orders/checkout/"
-        local body: string = '{"gateway":"kinetix-api-gateway","service":"catalog-service","route":"order-checkout","method":"' .. method .. '","upstream":"' .. targetUrl .. '"}'
-        return builder.buildJsonResponse(201, body, { ["X-Kinetix-Upstream"] = targetUrl })
-    end
-
     return nil
 end
 
