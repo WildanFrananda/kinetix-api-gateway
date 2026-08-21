@@ -1,0 +1,38 @@
+# Luau & Lute Package Management
+luau_packages/
+packages/
+sourcemap.json
+*.lock
+
+# Environment & Secrets
+.env
+.env.local
+.env.*.local
+
+# Operating System & System Cache
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE & Code Editors
+.vscode/
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Build & Temporary Output
+build/
+dist/
+tmp/
+*.log
+
+# Docker
+.docker/
