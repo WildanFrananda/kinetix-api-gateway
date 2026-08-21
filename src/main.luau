@@ -1,76 +1,76 @@
 --!strict
 -- Kinetix API Gateway Engine (Luau Strict Type System & Lute Runtime)
--- Single entrypoint for public client HTTP requests, reverse-proxying downstream to microservices.
+-- Modular Dispatcher & Orchestrator for REST, WebSockets, SSE Streaming, and Auth routes.
 
 local net = require("@lute/net")
 local types = require("./types")
 local config: types.GatewayConfig = require("./config")
+local builder = require("./response_builder")
+
+local healthRouter = require("./routes/health_router")
+local authRouter = require("./routes/auth_router")
+local catalogRouter = require("./routes/catalog_router")
+local warehouseRouter = require("./routes/warehouse_router")
+local matchingRouter = require("./routes/matching_router")
+local websocketRouter = require("./routes/websocket_router")
+local sseRouter = require("./routes/sse_router")
 
 local PORT: number = config.port
-local CATALOG_SERVICE_URL: string = config.catalog_service_url
-local WAREHOUSE_SERVICE_URL: string = config.warehouse_service_url
-local MATCHING_SERVICE_URL: string = config.matching_service_url
+local IDENTITY_URL: string = config.identity_service_url
+local CATALOG_URL: string = config.catalog_service_url
+local WAREHOUSE_URL: string = config.warehouse_service_url
+local MATCHING_URL: string = config.matching_service_url
 
 print("==================================================")
-print("⚡ Starting Kinetix API Gateway (Luau --!strict Mode)")
-print("Listening on port: " .. tostring(PORT))
-print("Catalog Service:   " .. CATALOG_SERVICE_URL)
-print("Warehouse Service: " .. WAREHOUSE_SERVICE_URL)
-print("Matching Service:  " .. MATCHING_SERVICE_URL)
+print("⚡ Kinetix API Gateway (Complete Modular Engine)")
+print("Public Port:         " .. tostring(PORT))
+print("Identity Service:    " .. IDENTITY_URL)
+print("Catalog Service:     " .. CATALOG_URL)
+print("Warehouse Service:   " .. WAREHOUSE_URL)
+print("Matching Service:    " .. MATCHING_URL)
 print("==================================================")
-
-local function buildJsonResponse(statusCode: number, jsonBody: string, extraHeaders: { [string]: string }?): types.Response
-    local headers: { [string]: string } = {
-        ["Content-Type"] = "application/json",
-        ["Server"] = "Kinetix-API-Gateway/Luau-Strict"
-    }
-
-    if extraHeaders then
-        for key: string, value: string in pairs(extraHeaders) do
-            headers[key] = value
-        end
-    end
-
-    return {
-        status = statusCode,
-        headers = headers,
-        body = jsonBody
-    }
-end
 
 local function handleRequest(req: types.Request): types.Response
     local path: string = req.path or "/"
+    local method: string = req.method or "GET"
+    local headersMap: { [string]: string } = req.headers or {}
 
-    -- Health Check Endpoint
-    if path == "/health" or path == "/api/v1/health" then
-        local healthJson: string = '{"status":"ok","gateway":"kinetix-api-gateway","engine":"Luau/Lute","mode":"strict","port":' .. tostring(PORT) .. '}'
-        return buildJsonResponse(200, healthJson)
+    -- CORS OPTIONS Preflight
+    if method == "OPTIONS" then
+        return builder.buildJsonResponse(204, "")
     end
 
-    -- Route: Catalog Service (/api/v1/products/...)
-    if string.find(path, "^/api/v1/products") then
-        local target_url: string = CATALOG_SERVICE_URL .. string.gsub(path, "^/api/v1", "/api")
-        local responseBody: string = '{"gateway":"kinetix-api-gateway","route":"catalog-service","target":"' .. target_url .. '"}'
-        return buildJsonResponse(200, responseBody, { ["X-Kinetix-Gateway"] = "Luau-Catalog-Proxy" })
-    end
+    -- 1. Health Router
+    local healthRes: types.Response? = healthRouter.handleHealth(path, PORT)
+    if healthRes then return healthRes end
 
-    -- Route: Warehouse Service (/api/v1/warehouse/...)
-    if string.find(path, "^/api/v1/warehouse") then
-        local target_url: string = WAREHOUSE_SERVICE_URL .. string.gsub(path, "^/api/v1/warehouse", "/api")
-        local responseBody: string = '{"gateway":"kinetix-api-gateway","route":"warehouse-service","target":"' .. target_url .. '"}'
-        return buildJsonResponse(200, responseBody, { ["X-Kinetix-Gateway"] = "Luau-Warehouse-Proxy" })
-    end
+    -- 2. Auth & Identity Router (Login / Register / Profile / Seller Onboarding)
+    local authRes: types.Response? = authRouter.handleAuthRoute(path, method, IDENTITY_URL)
+    if authRes then return authRes end
 
-    -- Route: Matching Service (/api/v1/matching/...)
-    if string.find(path, "^/api/v1/matching") then
-        local target_url: string = MATCHING_SERVICE_URL .. string.gsub(path, "^/api/v1/matching", "/api")
-        local responseBody: string = '{"gateway":"kinetix-api-gateway","route":"matching-service","target":"' .. target_url .. '"}'
-        return buildJsonResponse(200, responseBody, { ["X-Kinetix-Gateway"] = "Luau-Matching-Proxy" })
-    end
+    -- 3. WebSocket Upgrade Router
+    local wsRes: types.Response? = websocketRouter.handleWebSocketRoute(path, headersMap, MATCHING_URL)
+    if wsRes then return wsRes end
 
-    -- 404 Not Found Fallback
-    local notFoundJson: string = '{"error":"Route not found","gateway":"kinetix-api-gateway"}'
-    return buildJsonResponse(404, notFoundJson)
+    -- 4. SSE Stream Router
+    local sseRes: types.Response? = sseRouter.handleSseRoute(path, MATCHING_URL)
+    if sseRes then return sseRes end
+
+    -- 5. Catalog Service Router
+    local catalogRes: types.Response? = catalogRouter.handleCatalogRoute(path, method, CATALOG_URL)
+    if catalogRes then return catalogRes end
+
+    -- 6. Warehouse Service Router
+    local warehouseRes: types.Response? = warehouseRouter.handleWarehouseRoute(path, method, WAREHOUSE_URL)
+    if warehouseRes then return warehouseRes end
+
+    -- 7. Matching Service Router
+    local matchingRes: types.Response? = matchingRouter.handleMatchingRoute(path, method, MATCHING_URL)
+    if matchingRes then return matchingRes end
+
+    -- 8. 404 Fallback
+    local notFoundJson: string = '{"error":"Public route not found on Kinetix API Gateway","path":"' .. path .. '"}'
+    return builder.buildJsonResponse(404, notFoundJson)
 end
 
 net.serve({

@@ -16,6 +16,7 @@ export type Response = {
 
 export type GatewayConfig = {
     port: number,
+    identity_service_url: string,
     catalog_service_url: string,
     warehouse_service_url: string,
     matching_service_url: string
