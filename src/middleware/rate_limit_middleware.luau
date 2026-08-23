@@ -1,6 +1,6 @@
 --!strict
 -- Kinetix API Gateway Rate Limiting Middleware (Luau Strict Mode & Lute Engine)
--- Memory-leak free sliding window with automatic TTL bucket eviction.
+-- High-traffic memory-leak free rate limiter with 60-second TTL eviction and anti-spoofing IP extraction.
 
 local types = require("../types")
 local builder = require("../response_builder")
@@ -12,20 +12,20 @@ type RateBucket = {
 
 local clientBuckets: { [string]: RateBucket } = {}
 local lastCleanupTime: number = os.time()
-local CLEANUP_INTERVAL_SEC: number = 300 -- Periodic eviction every 5 minutes
+local CLEANUP_INTERVAL_SEC: number = 60 -- Evict expired IP buckets every 60 seconds to prevent high-traffic memory bloat
 
 local AUTH_ROUTE_LIMIT: number = 10     -- Max 10 auth requests per window (login/register)
 local GENERAL_ROUTE_LIMIT: number = 100   -- Max 100 general API requests per window
 local WINDOW_DURATION_SEC: number = 60    -- 60 seconds fixed sliding window
 
--- Memory Cleanup Routine to prevent IP table memory leaks
+-- Memory Cleanup Routine to prevent IP table memory leaks on high traffic
 local function evictExpiredBuckets(now: number)
     if (now - lastCleanupTime) < CLEANUP_INTERVAL_SEC then
         return
     end
 
     for key: string, bucket: RateBucket in pairs(clientBuckets) do
-        if (now - bucket.windowStart) > (WINDOW_DURATION_SEC * 2) then
+        if (now - bucket.windowStart) > WINDOW_DURATION_SEC then
             clientBuckets[key] = nil
         end
     end
@@ -34,9 +34,18 @@ end
 
 local function getClientKey(req: types.Request): string
     local headersMap: { [string]: string } = req.headers or {}
-    local clientIp: string = headersMap["x-forwarded-for"] or headersMap["X-Forwarded-For"] or headersMap["x-real-ip"] or "127.0.0.1"
+    -- Anti-spoofing IP extraction
+    local clientIp: string = headersMap["x-real-ip"] or headersMap["remote-addr"] or "127.0.0.1"
+    local rawForwarded: string? = headersMap["x-forwarded-for"] or headersMap["X-Forwarded-For"]
+    if rawForwarded and rawForwarded ~= "" then
+        -- Take last IP entry from trusted reverse proxy chain
+        local parts = string.split(rawForwarded, ",")
+        if #parts > 0 then
+            clientIp = string.gsub(parts[#parts], "%s+", "")
+        end
+    end
+
     local path: string = req.path or "/"
-    
     if string.find(path, "^/api/v1/auth/") then
         return clientIp .. ":auth"
     end
@@ -71,10 +80,12 @@ local function checkRateLimit(req: types.Request): (boolean, types.Response?, nu
         local tooManyJson: string = '{"error":"Too Many Requests","message":"API rate limit exceeded. Please wait ' .. tostring(resetSec) .. ' seconds before retrying.","retry_after":' .. tostring(resetSec) .. '}'
         
         local res: types.Response = builder.buildJsonResponse(429, tooManyJson)
-        res.headers["X-RateLimit-Limit"] = tostring(maxLimit)
-        res.headers["X-RateLimit-Remaining"] = "0"
-        res.headers["X-RateLimit-Reset"] = tostring(resetSec)
-        res.headers["Retry-After"] = tostring(resetSec)
+        local headersMap: { [string]: string } = res.headers or {}
+        headersMap["X-RateLimit-Limit"] = tostring(maxLimit)
+        headersMap["X-RateLimit-Remaining"] = "0"
+        headersMap["X-RateLimit-Reset"] = tostring(resetSec)
+        headersMap["Retry-After"] = tostring(resetSec)
+        res.headers = headersMap
 
         return false, res, maxLimit, 0
     end

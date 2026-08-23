@@ -7,13 +7,27 @@ local builder = require("../response_builder")
 local function handleAuthRoute(path: string, method: string, identityUrl: string, req: types.Request): types.Response?
     if path == "/api/v1/auth/login" or path == "/api/v1/auth/register" then
         local targetPath: string = string.gsub(path, "^/api/v1/auth", "/api/auth")
-        local targetUrl: string = identityUrl .. targetPath
-        
+        local queryString: string = ""
+        if req.query and type(req.query) == "string" then
+            queryString = req.query
+        end
+        local fullTargetPath: string = targetPath .. (queryString ~= "" and ("?" .. queryString) or "")
+        local targetUrl: string = identityUrl .. fullTargetPath
+
+        local forwardHeaders: { [string]: string } = {}
+        if req.headers then
+            for k: string, v: string in pairs(req.headers) do
+                if string.lower(k) ~= "host" then
+                    forwardHeaders[k] = v
+                end
+            end
+        end
+        forwardHeaders["Host"] = string.gsub(identityUrl, "^https?://", "")
+
         local success, res = pcall(function()
-            return net.request({
-                url = targetUrl,
+            return net.client.request(targetUrl, {
                 method = method,
-                headers = req.headers or {},
+                headers = forwardHeaders,
                 body = req.body or ""
             })
         end)

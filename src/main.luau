@@ -1,5 +1,5 @@
 --!strict
--- Kinetix API Gateway Engine (Luau Strict Type System & Lute Runtime)
+-- Kinetix API Gateway Engine (Luau Strict Type System & Lute Engine Runtime)
 -- Modular Reverse-Proxy Dispatcher & Orchestrator for REST, WebSockets, SSE Streaming, Rate Limiting & JWT Auth Verification.
 
 local net = require("@lute/net")
@@ -24,7 +24,7 @@ local WAREHOUSE_URL: string = config.warehouse_service_url
 local MATCHING_URL: string = config.matching_service_url
 
 print("==================================================")
-print("⚡ Kinetix API Gateway (Reverse-Proxy Engine)")
+print("⚡ Kinetix API Gateway (Lute Engine Reverse-Proxy)")
 print("Public Port:         " .. tostring(PORT))
 print("Identity Service:    " .. IDENTITY_URL)
 print("Catalog Service:     " .. CATALOG_URL)
@@ -32,7 +32,7 @@ print("Warehouse Service:   " .. WAREHOUSE_URL)
 print("Matching Service:    " .. MATCHING_URL)
 print("==================================================")
 
-local function handleRequest(req: types.Request): types.Response
+local function handleRequest(req: any): types.Response
     local path: string = req.path or "/"
     local method: string = req.method or "GET"
     local headersMap: { [string]: string } = req.headers or {}
@@ -43,7 +43,7 @@ local function handleRequest(req: types.Request): types.Response
     end
 
     -- 1. Memory-Leak Free Rate Limiting Guard
-    local isAllowed: boolean, rateLimitResponse: types.Response?, limit: number, remaining: number = rateLimitMiddleware.checkRateLimit(req)
+    local isAllowed: boolean, rateLimitResponse: types.Response?, _limit: number, _remaining: number = rateLimitMiddleware.checkRateLimit(req)
     if not isAllowed and rateLimitResponse then
         return rateLimitResponse
     end
@@ -62,6 +62,15 @@ local function handleRequest(req: types.Request): types.Response
         return authErrorResponse
     end
 
+    -- Inject verified User Identity headers into request before forwarding to downstream microservices
+    if userId then
+        req.headers = req.headers or {}
+        req.headers["X-User-Id"] = userId
+        if userRole then
+            req.headers["X-User-Role"] = userRole
+        end
+    end
+
     -- 5. WebSocket Upgrade Router
     local wsRes: types.Response? = websocketRouter.handleWebSocketRoute(path, headersMap, MATCHING_URL)
     if wsRes then return wsRes end
@@ -70,15 +79,15 @@ local function handleRequest(req: types.Request): types.Response
     local sseRes: types.Response? = sseRouter.handleSseRoute(path, MATCHING_URL, req)
     if sseRes then return sseRes end
 
-    -- 7. Catalog Service Router (Reverse Proxy)
+    -- 7. Catalog Service Router (Reverse Proxy with Query String & Identity Headers)
     local catalogRes: types.Response? = catalogRouter.handleCatalogRoute(path, method, CATALOG_URL, req)
     if catalogRes then return catalogRes end
 
-    -- 8. Warehouse Service Router (Reverse Proxy)
+    -- 8. Warehouse Service Router (Reverse Proxy with Query String & Identity Headers)
     local warehouseRes: types.Response? = warehouseRouter.handleWarehouseRoute(path, method, WAREHOUSE_URL, req)
     if warehouseRes then return warehouseRes end
 
-    -- 9. Matching Service Router (Reverse Proxy)
+    -- 9. Matching Service Router (Reverse Proxy with Query String & Identity Headers)
     local matchingRes: types.Response? = matchingRouter.handleMatchingRoute(path, method, MATCHING_URL, req)
     if matchingRes then return matchingRes end
 
@@ -87,7 +96,9 @@ local function handleRequest(req: types.Request): types.Response
     return builder.buildJsonResponse(404, notFoundJson)
 end
 
-net.serve({
+net.server.serve({
+    address = "0.0.0.0",
+    host = "0.0.0.0",
     port = PORT,
-    on_request = handleRequest
+    handler = handleRequest
 })

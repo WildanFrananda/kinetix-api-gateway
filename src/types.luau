@@ -1,17 +1,19 @@
 --!strict
--- Kinetix API Gateway Type Definitions (Luau Strict Type System)
+-- Kinetix API Gateway Type Definitions (Luau Strict Type System & Lute Engine)
 
 export type Request = {
-    path: string?,
-    method: string?,
-    headers: { [string]: string }?,
+    path: string,
+    query: { [string]: string }?,
+    url: string?,
+    method: string,
+    headers: { [string]: string },
     body: string?
 }
 
 export type Response = {
-    status: number,
-    headers: { [string]: string },
-    body: string
+    status: number?,
+    headers: { [string]: string }?,
+    body: string?
 }
 
 export type GatewayConfig = {

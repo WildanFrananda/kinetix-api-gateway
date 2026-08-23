@@ -2,45 +2,37 @@
 
 local net = require("@lute/net")
 local types = require("../types")
-local builder = require("../response_builder")
 
 local function handleSseRoute(path: string, matchingUrl: string, req: types.Request): types.Response?
-    if path == "/api/v1/matching/telemetry/stream" then
+    if path == "/api/v1/matching/telemetry/stream" or path == "/api/v1/matching/events" then
         local targetUrl: string = matchingUrl .. "/api/v1/telemetry/stream"
-        
+
         local success, res = pcall(function()
-            return net.request({
-                url = targetUrl,
+            return net.client.request(targetUrl, {
                 method = "GET",
-                headers = {
-                    ["Accept"] = "text/event-stream",
-                    ["Cache-Control"] = "no-cache",
-                    ["Connection"] = "keep-alive"
-                }
+                headers = req.headers or {}
             })
         end)
 
         if success and res then
+            local sseHeaders: { [string]: string } = res.headers or {}
+            sseHeaders["Content-Type"] = "text/event-stream"
+            sseHeaders["Cache-Control"] = "no-cache"
+            sseHeaders["Connection"] = "keep-alive"
             return {
                 status = res.status or 200,
-                headers = res.headers or {
+                headers = sseHeaders,
+                body = res.body or "event: ping\ndata: {}\n\n"
+            }
+        else
+            return {
+                status = 200,
+                headers = {
                     ["Content-Type"] = "text/event-stream",
                     ["Cache-Control"] = "no-cache",
                     ["Connection"] = "keep-alive"
                 },
-                body = res.body or ""
-            }
-        else
-            local sseHeaders = {
-                ["Content-Type"] = "text/event-stream",
-                ["Cache-Control"] = "no-cache",
-                ["Connection"] = "keep-alive",
-                ["X-Accel-Buffering"] = "no"
-            }
-            return {
-                status = 200,
-                headers = sseHeaders,
-                body = "retry: 5000\nevent: ping\ndata: {\"status\":\"gateway_stream_active\",\"timestamp\":" .. tostring(os.time()) .. "}\n\n"
+                body = "retry: 5000\nevent: ping\ndata: {\"status\":\"matching_service_connecting\"}\n\n"
             }
         end
     end
