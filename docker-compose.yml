@@ -7,9 +7,8 @@ services:
     restart: always
     ports:
       - "8080:8080"
+      - "8443:8443"
     environment:
-      - PORT=8080
-      - IDENTITY_SERVICE_URL=http://kinetix-identity-service:5000
-      - CATALOG_SERVICE_URL=http://kinetix-catalog-service:8000
-      - WAREHOUSE_SERVICE_URL=http://kinetix-warehouse-service:3000
-      - MATCHING_SERVICE_URL=http://kinetix-matching-service:4000
+      - KONG_DATABASE=off
+      - KONG_DECLARATIVE_CONFIG=/usr/local/kong/declarative/kong.yml
+      - KONG_PROXY_LISTEN=0.0.0.0:8080, 0.0.0.0:8443 ssl
