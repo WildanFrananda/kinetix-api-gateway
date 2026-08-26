@@ -1,7 +1,9 @@
 _format_version = "3.0"
 _transform = true
 
+// Core Backend Service Definitions
 services {
+  // 1. Healthcheck Route (Static JSON 200 OK response via request-termination plugin)
   new {
     name = "health-service"
     url = "http://127.0.0.1:8080/health"
@@ -24,6 +26,7 @@ services {
     }
   }
 
+  // 2. Identity Service (:5000)
   new {
     name = "identity-service"
     url = "http://kinetix-identity-service:5000/api/auth"
@@ -36,6 +39,7 @@ services {
     }
   }
 
+  // 3. Catalog Service (:8000)
   new {
     name = "catalog-service"
     url = "http://kinetix-catalog-service:8000/api"
@@ -54,6 +58,7 @@ services {
     }
   }
 
+  // 4. Warehouse OMS Service (:3000)
   new {
     name = "warehouse-service"
     url = "http://kinetix-warehouse-service:3000/api/v1"
@@ -66,6 +71,7 @@ services {
     }
   }
 
+  // 5. Matching Service REST (:4000)
   new {
     name = "matching-service"
     url = "http://kinetix-matching-service:4000/api/v1"
@@ -78,6 +84,7 @@ services {
     }
   }
 
+  // 6. Matching Service WebSocket Proxy (:4000)
   new {
     name = "matching-websocket"
     url = "http://kinetix-matching-service:4000/socket/websocket"
@@ -94,6 +101,7 @@ services {
     }
   }
 
+  // 7. Telemetry SSE Stream Proxy (:4000)
   new {
     name = "matching-sse"
     url = "http://kinetix-matching-service:4000/api/v1/telemetry/stream"
@@ -105,8 +113,22 @@ services {
       }
     }
   }
+
+  // 8. Pricing Service REST (:6000) [Rocket Rust]
+  new {
+    name = "pricing-service"
+    url = "http://kinetix-pricing-service:6000/api/v1"
+    routes {
+      new {
+        name = "pricing-route"
+        paths { "/api/v1/pricing" }
+        strip_path = true
+      }
+    }
+  }
 }
 
+// Global Plugins
 plugins {
   new {
     name = "cors"
