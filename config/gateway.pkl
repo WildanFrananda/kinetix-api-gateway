@@ -48,8 +48,6 @@ services {
         name = "catalog-route"
         paths {
           "/api/v1/products"
-          "/api/v1/cart"
-          "/api/v1/checkout"
           "/api/v1/categories"
           "/api/v1/brands"
         }
@@ -126,6 +124,35 @@ services {
       }
     }
   }
+
+  // 9. Order Service REST (:8001) [.NET 10 / C# 13]
+  new {
+    name = "order-service"
+    url = "http://kinetix-order-service:8001/api/v1"
+    routes {
+      new {
+        name = "order-route"
+        paths {
+          "/api/v1/cart"
+          "/api/v1/orders"
+        }
+        strip_path = true
+      }
+    }
+  }
+
+  // 10. Review Service REST (:8002) [Laravel 13 / PHP 8.5]
+  new {
+    name = "review-service"
+    url = "http://kinetix-review-service:8002/api/v1"
+    routes {
+      new {
+        name = "review-route"
+        paths { "/api/v1/reviews" }
+        strip_path = true
+      }
+    }
+  }
 }
 
 // Global Plugins
@@ -135,7 +162,7 @@ plugins {
     config {
       origins { "*" }
       methods { "GET"; "POST"; "PUT"; "PATCH"; "DELETE"; "OPTIONS" }
-      headers { "Accept"; "Authorization"; "Content-Type"; "Idempotency-Key"; "X-Requested-With" }
+      headers { "Accept"; "Authorization"; "Content-Type"; "Idempotency-Key"; "X-Requested-With"; "X-User-Id"; "X-User-Role" }
       credentials = true
       max_age = 3600
     }
