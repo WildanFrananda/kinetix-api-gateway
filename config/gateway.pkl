@@ -153,6 +153,19 @@ services {
       }
     }
   }
+
+  // 11. Payment Service REST (:8003) [Spring Boot Java 25]
+  new {
+    name = "payment-service"
+    url = "http://kinetix-payment-service:8003/api/v1"
+    routes {
+      new {
+        name = "payment-route"
+        paths { "/api/v1/payment" }
+        strip_path = true
+      }
+    }
+  }
 }
 
 // Global Plugins
