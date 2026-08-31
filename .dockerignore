@@ -1,0 +1,23 @@
+# Keep secrets and local state out of the build context (S1 / P0-IMG-01).
+# Every Dockerfile here used COPY . . with no .dockerignore, so .env — which now holds
+# freshly rotated secrets — and the whole .git history were baked into distributable
+# image layers. `docker history` exposes them even if a later layer deletes the file.
+
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+.git
+.gitignore
+.github
+.gitlab-ci.yml
+
+Dockerfile
+docker-compose*.yml
+.dockerignore
+
+*.md
+docs/
+
