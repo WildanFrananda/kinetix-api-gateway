@@ -1,0 +1,86 @@
+# Kinetix API gateway CI. (S2 / P1-GW-03)
+#
+# The gateway's config is generated from Apple Pkl, so three things can break independently:
+# the Pkl evaluates but produces invalid Kong config; the Kong config is valid but routes to
+# hostnames nothing answers to; the routes resolve but rewrite the path into a 404. This
+# pipeline separates those.
+
+include:
+  - project: 'WildanFrananda/kinetix-infrastructure'
+    ref: main
+    file: '/ci/service-ci.yml'
+
+stages:
+  - verify
+  - build
+  - test
+
+secret-scan:
+  extends: .secret-scan
+
+# ── 1. The Pkl evaluates and Kong accepts the result ─────────────────────────────────
+
+config-valid:
+  stage: verify
+  image: kong/deck:latest
+  before_script:
+    - apk add --no-cache curl ca-certificates
+    - |
+      case "$(uname -m)" in
+        aarch64|arm64) PKL_ARCH=linux-aarch64 ;;
+        *)             PKL_ARCH=linux-amd64 ;;
+      esac
+      curl -sSL -o /usr/local/bin/pkl "https://github.com/apple/pkl/releases/download/0.32.1/pkl-${PKL_ARCH}"
+      chmod +x /usr/local/bin/pkl
+  script:
+    - pkl eval -f yaml config/gateway.pkl -o kong.yml
+    - deck gateway validate kong.yml
+    # Every upstream must be a compose service name, never localhost or a host-network escape.
+    - |
+      if grep -nE 'url: https?://(localhost|host\.docker\.internal|127\.0\.0\.1)' kong.yml \
+         | grep -v '127.0.0.1:8080/health'; then
+        echo "an upstream points outside the compose network"; exit 1
+      fi
+  artifacts:
+    paths:
+      - kong.yml
+    expire_in: 1 week
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+build-image:
+  extends: .build-image
+  needs: [config-valid]
+
+# ── 2. The routes actually reach something ───────────────────────────────────────────
+#
+# Brings the platform up from the single compose file and runs the conformance suite against
+# the running gateway. This is the job that would have caught four services 404-ing.
+
+route-conformance:
+  stage: test
+  image: docker:27-cli
+  services:
+    - docker:27-dind
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"
+    DOCKER_HOST: "tcp://docker:2376"
+    DOCKER_TLS_VERIFY: "1"
+    DOCKER_CERT_PATH: "/certs/client"
+  before_script:
+    - apk add --no-cache bash curl git python3 age
+    - git clone --depth 1 https://gitlab.com/WildanFrananda/kinetix-infrastructure.git ../kinetix-infrastructure
+    # SOPS_AGE_KEY is a masked, protected CI variable holding the dev age private key.
+    # Without it nothing renders — which is the point: CI must not have its own secret path.
+    - test -n "$SOPS_AGE_KEY" || { echo "SOPS_AGE_KEY is not set; the pipeline cannot render the store"; exit 1; }
+  script:
+    - cd ../kinetix-infrastructure
+    - bin/kinetix-secrets render dev
+    - docker compose -f compose.yaml up -d --wait kinetix-api-gateway
+    - cd -
+    - bash test/route_conformance.sh http://localhost:8080
+  after_script:
+    - cd ../kinetix-infrastructure && docker compose -f compose.yaml down -v || true
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH

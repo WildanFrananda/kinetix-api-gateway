@@ -1,9 +1,25 @@
+// Kinetix API gateway — Kong DB-less declarative config. (S2 / P1-GW-01, P1-GW-02)
+//
+// Two rules govern every entry below.
+//
+//   1. THE UPSTREAM HOST IS A COMPOSE SERVICE NAME. `kinetix-<svc>-service` is the DNS name
+//      on the `kinetix` network. Renaming a service in compose.yaml breaks the route here.
+//
+//   2. THE PUBLIC PATH AND THE UPSTREAM PATH ARE STATED TOGETHER. Each service records what
+//      it actually serves, because `strip_path` is only correct relative to that. Kong strips
+//      the matched ROUTE path and appends the remainder to the SERVICE path. Getting this
+//      backwards is why four services returned 404 and three worked only by coincidence.
+//
+// Where the public path already equals the upstream path, the service carries no path and
+// `strip_path` is false — nothing is rewritten. Where they differ, the service carries the
+// upstream prefix and `strip_path` is true.
+
 _format_version = "3.0"
 _transform = true
 
-// Core Backend Service Definitions
 services {
-  // 1. Healthcheck Route (Static JSON 200 OK response via request-termination plugin)
+  // ── health ────────────────────────────────────────────────────────────────────────
+  // Answered by Kong itself; never reaches an upstream.
   new {
     name = "health-service"
     url = "http://127.0.0.1:8080/health"
@@ -18,7 +34,7 @@ services {
             config {
               status_code = 200
               content_type = "application/json"
-              body = "{\"status\":\"ok\",\"gateway\":\"kinetix-api-gateway\",\"engine\":\"Kong/DB-less (Apple Pkl)\",\"mode\":\"production\",\"port\":8080}"
+              body = "{\"status\":\"ok\",\"gateway\":\"kinetix-api-gateway\",\"engine\":\"Kong/DB-less (Apple Pkl)\"}"
             }
           }
         }
@@ -26,37 +42,80 @@ services {
     }
   }
 
-  // 2. Identity Service (:5000)
+  // ── identity :5000 ────────────────────────────────────────────────────────────────
+  // Serves /api/auth, /api/users, /api/sellers — no `v1` segment upstream, so each needs
+  // its own service to carry the right prefix. /api/v1/users and /api/v1/sellers were
+  // absent from this file entirely: two working controllers with no way in.
   new {
-    name = "identity-service"
+    name = "identity-auth"
     url = "http://kinetix-identity-service:5000/api/auth"
     routes {
       new {
-        name = "identity-route"
+        name = "identity-auth-route"
         paths { "/api/v1/auth" }
         strip_path = true
       }
     }
   }
 
-  // 3. Catalog Service (:8000)
   new {
-    name = "catalog-service"
-    url = "http://kinetix-catalog-service:8000/api"
+    name = "identity-users"
+    url = "http://kinetix-identity-service:5000/api/users"
     routes {
       new {
-        name = "catalog-route"
-        paths {
-          "/api/v1/products"
-          "/api/v1/categories"
-          "/api/v1/brands"
-        }
+        name = "identity-users-route"
+        paths { "/api/v1/users" }
         strip_path = true
       }
     }
   }
 
-  // 4. Warehouse OMS Service (:3000)
+  new {
+    name = "identity-sellers"
+    url = "http://kinetix-identity-service:5000/api/sellers"
+    routes {
+      new {
+        name = "identity-sellers-route"
+        paths { "/api/v1/sellers" }
+        strip_path = true
+      }
+    }
+  }
+
+  // ── catalog :8000 ─────────────────────────────────────────────────────────────────
+  // Django serves /api/products/ and /api/categories/. One service pointing at /api with
+  // routes for both resources collapsed /api/v1/products/ to /api/ — the resource name was
+  // stripped and never restored, so every catalog request 404'd. One service per resource.
+  //
+  // /api/v1/brands is gone: core/urls.py has no brands route. It was a public path to nothing.
+  new {
+    name = "catalog-products"
+    url = "http://kinetix-catalog-service:8000/api/products"
+    routes {
+      new {
+        name = "catalog-products-route"
+        paths { "/api/v1/products" }
+        strip_path = true
+      }
+    }
+  }
+
+  new {
+    name = "catalog-categories"
+    url = "http://kinetix-catalog-service:8000/api/categories"
+    routes {
+      new {
+        name = "catalog-categories-route"
+        paths { "/api/v1/categories" }
+        strip_path = true
+      }
+    }
+  }
+
+  // ── warehouse :3000 ───────────────────────────────────────────────────────────────
+  // Rails serves /api/v1/orders and /api/v1/returns. Public traffic is namespaced under
+  // /api/v1/warehouse so it does not collide with order-service, which also owns
+  // /api/v1/orders. Strip the namespace, keep the resource.
   new {
     name = "warehouse-service"
     url = "http://kinetix-warehouse-service:3000/api/v1"
@@ -69,7 +128,9 @@ services {
     }
   }
 
-  // 5. Matching Service REST (:4000)
+  // ── matching :4000 ────────────────────────────────────────────────────────────────
+  // Phoenix serves /api/v1/drivers, /api/v1/orders/:id, /api/v1/merchant/orders and
+  // /api/v1/shipping/options. Same namespacing rationale as warehouse.
   new {
     name = "matching-service"
     url = "http://kinetix-matching-service:4000/api/v1"
@@ -82,37 +143,27 @@ services {
     }
   }
 
-  // 6. Matching Service WebSocket Proxy (:4000)
+  // The driver socket. One public path, not two: /socket/websocket was also exposed
+  // directly, which published Phoenix's internal transport path as a second entry point.
   new {
     name = "matching-websocket"
     url = "http://kinetix-matching-service:4000/socket/websocket"
     routes {
       new {
         name = "matching-websocket-route"
-        paths {
-          "/ws/v1/matching/socket"
-          "/socket/websocket"
-        }
+        paths { "/ws/v1/matching/socket" }
         protocols { "http"; "https" }
         strip_path = true
       }
     }
   }
 
-  // 7. Telemetry SSE Stream Proxy (:4000)
-  new {
-    name = "matching-sse"
-    url = "http://kinetix-matching-service:4000/api/v1/telemetry/stream"
-    routes {
-      new {
-        name = "matching-sse-route"
-        paths { "/api/v1/matching/telemetry/stream" }
-        strip_path = true
-      }
-    }
-  }
+  // Removed: `matching-sse` pointed at /api/v1/telemetry/stream, which does not exist in
+  // FleetPulseWeb.Router. It was a public path to a 404, like /api/v1/brands.
 
-  // 8. Pricing Service REST (:6000) [Rocket Rust]
+  // ── pricing :6000 ─────────────────────────────────────────────────────────────────
+  // Rocket serves /api/v1/vouchers, /api/v1/discounts, /api/v1/flash-sales. There is no
+  // /api/v1/pricing upstream: the namespace exists only at the gateway and is stripped.
   new {
     name = "pricing-service"
     url = "http://kinetix-pricing-service:6000/api/v1"
@@ -125,10 +176,13 @@ services {
     }
   }
 
-  // 9. Order Service REST (:8001) [.NET 10 / C# 13]
+  // ── order :8001 ───────────────────────────────────────────────────────────────────
+  // ASP.NET serves /api/v1/orders and /api/v1/cart — identical to the public path, so
+  // nothing is rewritten. Previously the service carried /api/v1 AND the route stripped
+  // /api/v1/orders, so GET /api/v1/orders/1 arrived upstream as /api/v1/1.
   new {
     name = "order-service"
-    url = "http://kinetix-order-service:8001/api/v1"
+    url = "http://kinetix-order-service:8001"
     routes {
       new {
         name = "order-route"
@@ -136,46 +190,54 @@ services {
           "/api/v1/cart"
           "/api/v1/orders"
         }
-        strip_path = true
+        strip_path = false
       }
     }
   }
 
-  // 10. Review Service REST (:8002) [Laravel 13 / PHP 8.5]
+  // ── review :8002 ──────────────────────────────────────────────────────────────────
+  // Laravel serves /api/v1/reviews/*. Same defect as order-service, same fix.
   new {
     name = "review-service"
-    url = "http://kinetix-review-service:8002/api/v1"
+    url = "http://kinetix-review-service:8002"
     routes {
       new {
         name = "review-route"
         paths { "/api/v1/reviews" }
-        strip_path = true
+        strip_path = false
       }
     }
   }
 
-  // 11. Payment Service REST (:8003) [Spring Boot Java 25]
+  // ── payment :8003 ─────────────────────────────────────────────────────────────────
+  // Spring serves /api/v1/payment/{checkout,wallet,escrow}. Same defect as order-service:
+  // POST /api/v1/payment/checkout/pay arrived upstream as /api/v1/checkout/pay.
   new {
     name = "payment-service"
-    url = "http://kinetix-payment-service:8003/api/v1"
+    url = "http://kinetix-payment-service:8003"
     routes {
       new {
         name = "payment-route"
         paths { "/api/v1/payment" }
-        strip_path = true
+        strip_path = false
       }
     }
   }
 }
 
-// Global Plugins
+// Global plugins.
+//
+// Authentication is deliberately absent here and is not an oversight: the JWT boundary,
+// the revocation check and the removal of X-User-Id land together in S6. Until then this
+// gateway routes but does not authenticate, and every service behind it must assume the
+// caller is anonymous.
 plugins {
   new {
     name = "cors"
     config {
       origins { "*" }
       methods { "GET"; "POST"; "PUT"; "PATCH"; "DELETE"; "OPTIONS" }
-      headers { "Accept"; "Authorization"; "Content-Type"; "Idempotency-Key"; "X-Requested-With"; "X-User-Id"; "X-User-Role" }
+      headers { "Accept"; "Authorization"; "Content-Type"; "Idempotency-Key"; "X-Requested-With" }
       credentials = true
       max_age = 3600
     }
