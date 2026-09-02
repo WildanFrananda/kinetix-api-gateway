@@ -25,7 +25,11 @@ jobs:
 
       - name: Install deck
         run: |
-          curl -sSL https://github.com/Kong/deck/releases/latest/download/deck_linux_amd64.tar.gz \
+          version="$(curl -sSL https://api.github.com/repos/Kong/deck/releases/latest \
+            | grep -m1 '"tag_name"' | cut -d'"' -f4 | sed 's/^v//')"
+          test -n "$version" || { echo "could not resolve the latest deck release"; exit 1; }
+          echo "installing deck $version"
+          curl -fsSL "https://github.com/Kong/deck/releases/download/v${version}/deck_${version}_linux_amd64.tar.gz" \
             | tar -xz -C /tmp deck
           sudo mv /tmp/deck /usr/local/bin/
           deck version
@@ -34,7 +38,7 @@ jobs:
         run: pkl eval -f yaml config/gateway.pkl -o kong.yml
 
       - name: Kong must accept it
-        run: deck gateway validate kong.yml
+        run: deck file validate kong.yml
 
       # Every upstream has to be a compose service name. A localhost or host.docker.internal
       # address routes to the gateway container itself, which is how a config can look correct

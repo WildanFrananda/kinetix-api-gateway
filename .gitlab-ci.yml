@@ -26,7 +26,9 @@ secret-scan:
 
 config-valid:
   stage: verify
-  image: kong/deck:latest
+  image:
+    name: kong/deck:latest
+    entrypoint: [""]
   before_script:
     - apk add --no-cache curl ca-certificates
     - |
@@ -38,7 +40,7 @@ config-valid:
       chmod +x /usr/local/bin/pkl
   script:
     - pkl eval -f yaml config/gateway.pkl -o kong.yml
-    - deck gateway validate kong.yml
+    - deck file validate kong.yml
     # Every upstream must be a compose service name, never localhost or a host-network escape.
     - |
       if grep -nE 'url: https?://(localhost|host\.docker\.internal|127\.0\.0\.1)' kong.yml \
