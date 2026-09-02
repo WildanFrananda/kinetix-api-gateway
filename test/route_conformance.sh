@@ -58,19 +58,48 @@ while IFS=$'\t' read -r svc url path; do
 done < <(parse)
 
 echo
-echo "── 2. No declared public path returns 404"
+echo "── 2. Every declared public path reaches its upstream"
+#
+# A 404 is not automatically a failure, and treating it as one made this suite cry wolf on its
+# first full run. Two very different things return 404 here:
+#
+#   Kong itself, when no route matches      -> {"message":"no Route matched with those values"}
+#   the upstream, when the path has no handler -> the framework's own body, e.g.
+#                                              {"message":"Cannot GET /api/auth", ...}
+#
+# The second is the correct answer to a request for a bare resource prefix — /api/v1/auth is a
+# route namespace, not an endpoint; the endpoints under it are /login and /register. Getting
+# the application's own 404 proves the hop worked, which is exactly what this suite exists to
+# check. Only Kong's own 404 means the route is not wired.
 while IFS=$'\t' read -r svc url path; do
+  body="$(curl -s --max-time 10 "$BASE$path")"
   code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$BASE$path")"
   case "$code" in
-    404) bad "$path -> $code  ($svc)  route declared but nothing serves it" ;;
     000) bad "$path -> no response  ($svc)  gateway unreachable or timed out" ;;
-    5*)  bad "$path -> $code  ($svc)  upstream error" ;;
+    404)
+      if printf '%s' "$body" | grep -q 'no Route matched'; then
+        bad "$path -> 404 from Kong  ($svc)  no route matches this path"
+      else
+        ok "$path -> 404 from the upstream  ($svc)  reached the app; no handler at this prefix"
+      fi ;;
+    5*)  bad "$path -> $code  ($svc)  upstream unreachable or erroring" ;;
     *)   ok  "$path -> $code  ($svc)" ;;
   esac
 done < <(parse)
 
 echo
-echo "── 3. The gateway is the only thing on the host"
+echo "── 3. The 404 detector is not fooled"
+# Negative control. Check 2 passes an upstream 404, so it is only meaningful if a genuinely
+# unrouted path still fails. Without this the suite could pass by treating every 404 as fine.
+ctl="$(curl -s --max-time 10 "$BASE/definitely-not-a-declared-route")"
+if printf '%s' "$ctl" | grep -q 'no Route matched'; then
+  ok "an undeclared path is refused by Kong, so check 2 can tell the two 404s apart"
+else
+  bad "an undeclared path did NOT produce Kong's 404 — check 2's distinction is meaningless"
+fi
+
+echo
+echo "── 4. The gateway is the only thing on the host"
 published="$(docker compose -f "$COMPOSE" config --format json \
   | python3 -c 'import json,sys;d=json.load(sys.stdin);print(sum(len(v.get("ports") or []) for v in d["services"].values()))')"
 if [ "$published" = "1" ]; then

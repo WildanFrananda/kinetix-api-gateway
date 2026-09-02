@@ -1,4 +1,4 @@
-FROM debian:bookworm-slim AS pkl-builder
+FROM debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171 AS pkl-builder
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && rm -rf /var/lib/apt/lists/*
 
 ARG TARGETARCH
@@ -18,7 +18,7 @@ RUN mkdir -p /build && pkl eval -f yaml gateway.pkl -o /build/kong.yml
 # Pin the Kong minor rather than `latest`: the gateway is the platform's only published
 # surface, and `latest` means a rebuild can change what terminates every request without a
 # single line of this repository changing.
-FROM kong:3.9
+FROM kong:3.9@sha256:2a8cf3b110cdaba1cb00adc665b8635ed1fc75c907f7a4298613c68e4976de0a
 
 # root only long enough to place the generated config, then drop back to the image's own
 # unprivileged user. The previous `USER root` was never reversed, so the gateway ran the
