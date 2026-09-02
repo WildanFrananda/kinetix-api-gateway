@@ -79,8 +79,10 @@ jobs:
 
       - name: Nothing excluded may be in the image
         run: |
-          found="$(docker run --rm --entrypoint sh kinetix-api-gateway:ci -c 'ls -a . / 2>/dev/null' \
-            | grep -E '^\.(git|env)$' | sort -u)"
+          # `|| true` is load-bearing: grep exits 1 when it matches nothing, and the shell
+          # runs with -e, so a CLEAN image would fail this step silently.
+          listing="$(docker run --rm --entrypoint sh kinetix-api-gateway:ci -c 'ls -a . / 2>/dev/null' || true)"
+          found="$(printf '%s\n' "$listing" | grep -E '^\.(git|env)$' | sort -u || true)"
           if [ -n "$found" ]; then
             echo "these must not be in the image:"
             printf '  %s\n' $found
