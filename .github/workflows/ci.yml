@@ -1,0 +1,80 @@
+name: CI
+
+# The gateway's config is generated from Apple Pkl, so three things break independently: the
+# Pkl evaluates but produces invalid Kong config; the Kong config is valid but routes to
+# hostnames nothing answers to; the routes resolve but rewrite the path into a 404. Separate
+# jobs, so a red build says which.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  config-valid:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install pkl
+        run: |
+          curl -sSL -o /usr/local/bin/pkl \
+            https://github.com/apple/pkl/releases/download/0.32.1/pkl-linux-amd64
+          chmod +x /usr/local/bin/pkl
+          pkl --version
+
+      - name: Install deck
+        run: |
+          curl -sSL https://github.com/Kong/deck/releases/latest/download/deck_linux_amd64.tar.gz \
+            | tar -xz -C /tmp deck
+          sudo mv /tmp/deck /usr/local/bin/
+          deck version
+
+      - name: Evaluate the Pkl config
+        run: pkl eval -f yaml config/gateway.pkl -o kong.yml
+
+      - name: Kong must accept it
+        run: deck gateway validate kong.yml
+
+      # Every upstream has to be a compose service name. A localhost or host.docker.internal
+      # address routes to the gateway container itself, which is how a config can look correct
+      # and reach nothing.
+      - name: No upstream may point outside the network
+        run: |
+          if grep -nE 'url: https?://(localhost|host\.docker\.internal|127\.0\.0\.1)' kong.yml \
+             | grep -v '127.0.0.1:8080/health'; then
+            echo "an upstream points outside the compose network"
+            exit 1
+          fi
+          echo "every upstream is a service name"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kong-config
+          path: kong.yml
+          retention-days: 7
+
+  build-image:
+    runs-on: ubuntu-latest
+    needs: config-valid
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: The build context must carry no secret
+        run: |
+          test -f .dockerignore || { echo "no .dockerignore — the context would carry .env and .git"; exit 1; }
+          grep -qE '^\.env' .dockerignore || { echo ".dockerignore does not exclude .env"; exit 1; }
+          grep -qE '^\.git'  .dockerignore || { echo ".dockerignore does not exclude .git"; exit 1; }
+
+      - name: Build
+        run: docker build -t kinetix-api-gateway:ci .
+
+      # An empty or root USER is a failure, not a warning: this is the only container the
+      # platform publishes to the host.
+      - name: The image must not run as root
+        run: |
+          user="$(docker image inspect -f '{{json .Config.User}}' kinetix-api-gateway:ci | tr -d '"')"
+          case "$user" in
+            ""|"0"|"root"|"0:0") echo "image runs as root (USER='$user')"; exit 1 ;;
+            *) echo "image runs as '$user'" ;;
+          esac

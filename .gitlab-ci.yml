@@ -1,4 +1,8 @@
-# Kinetix API gateway CI. (S2 / P1-GW-03)
+# Kinetix API gateway CI — GitLab.
+#
+# ⚠ PAIRED FILE: .github/workflows/ci.yml
+# `origin` is GitHub and GitLab is a mirror. Both assert the same things and must be changed
+# together; if they drift, the two platforms disagree about whether the same commit is good.
 #
 # The gateway's config is generated from Apple Pkl, so three things can break independently:
 # the Pkl evaluates but produces invalid Kong config; the Kong config is valid but routes to

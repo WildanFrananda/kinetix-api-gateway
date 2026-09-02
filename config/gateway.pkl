@@ -43,41 +43,22 @@ services {
   }
 
   // ── identity :5000 ────────────────────────────────────────────────────────────────
-  // Serves /api/auth, /api/users, /api/sellers — no `v1` segment upstream, so each needs
-  // its own service to carry the right prefix. /api/v1/users and /api/v1/sellers were
-  // absent from this file entirely: two working controllers with no way in.
+  // NestJS now serves /api/v1/auth, /api/v1/users and /api/v1/sellers — identical to the
+  // public paths, so nothing is rewritten and one service covers all three. Previously the
+  // upstream had no `v1` segment, which forced a separate Kong service per prefix just to
+  // put the version back on.
   new {
-    name = "identity-auth"
-    url = "http://kinetix-identity-service:5000/api/auth"
+    name = "identity-service"
+    url = "http://kinetix-identity-service:5000"
     routes {
       new {
-        name = "identity-auth-route"
-        paths { "/api/v1/auth" }
-        strip_path = true
-      }
-    }
-  }
-
-  new {
-    name = "identity-users"
-    url = "http://kinetix-identity-service:5000/api/users"
-    routes {
-      new {
-        name = "identity-users-route"
-        paths { "/api/v1/users" }
-        strip_path = true
-      }
-    }
-  }
-
-  new {
-    name = "identity-sellers"
-    url = "http://kinetix-identity-service:5000/api/sellers"
-    routes {
-      new {
-        name = "identity-sellers-route"
-        paths { "/api/v1/sellers" }
-        strip_path = true
+        name = "identity-route"
+        paths {
+          "/api/v1/auth"
+          "/api/v1/users"
+          "/api/v1/sellers"
+        }
+        strip_path = false
       }
     }
   }
