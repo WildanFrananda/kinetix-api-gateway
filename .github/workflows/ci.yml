@@ -71,14 +71,22 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: The build context must carry no secret
-        run: |
-          test -f .dockerignore || { echo "no .dockerignore — the context would carry .env and .git"; exit 1; }
-          grep -qE '^\.env' .dockerignore || { echo ".dockerignore does not exclude .env"; exit 1; }
-          grep -qE '^\.git'  .dockerignore || { echo ".dockerignore does not exclude .git"; exit 1; }
+      - name: A .dockerignore must exist
+        run: test -f .dockerignore || { echo "no .dockerignore — the context would carry .env and .git"; exit 1; }
 
       - name: Build
         run: docker build -t kinetix-api-gateway:ci .
+
+      - name: Nothing excluded may be in the image
+        run: |
+          found="$(docker run --rm --entrypoint sh kinetix-api-gateway:ci -c 'ls -a . / 2>/dev/null' \
+            | grep -E '^\.(git|env)$' | sort -u)"
+          if [ -n "$found" ]; then
+            echo "these must not be in the image:"
+            printf '  %s\n' $found
+            exit 1
+          fi
+          echo "no .git and no .env in the image"
 
       # An empty or root USER is a failure, not a warning: this is the only container the
       # platform publishes to the host.
