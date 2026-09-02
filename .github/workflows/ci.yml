@@ -25,12 +25,19 @@ jobs:
 
       - name: Install deck
         run: |
-          version="$(curl -sSL https://api.github.com/repos/Kong/deck/releases/latest \
-            | grep -m1 '"tag_name"' | cut -d'"' -f4 | sed 's/^v//')"
+          # The API response goes to a file before it is parsed. `curl | grep -m1` makes grep
+          # exit at the first match, closing the pipe and failing curl with exit 23 — a
+          # download that succeeded, reported as an error, and fatal under pipefail.
+          curl -fsSL -o /tmp/deck-release.json https://api.github.com/repos/Kong/deck/releases/latest
+          version="$(grep -m1 '"tag_name"' /tmp/deck-release.json | cut -d'"' -f4 | sed 's/^v//')"
           test -n "$version" || { echo "could not resolve the latest deck release"; exit 1; }
           echo "installing deck $version"
-          curl -fsSL "https://github.com/Kong/deck/releases/download/v${version}/deck_${version}_linux_amd64.tar.gz" \
-            | tar -xz -C /tmp deck
+          # Downloaded to a file, then extracted — not piped. `curl | tar` makes tar close the
+          # pipe once it has the one file it wants, curl fails its write with exit 23, and the
+          # shell's pipefail turns a download that actually worked into a failed step.
+          curl -fsSL -o /tmp/deck.tgz \
+            "https://github.com/Kong/deck/releases/download/v${version}/deck_${version}_linux_amd64.tar.gz"
+          tar -xzf /tmp/deck.tgz -C /tmp deck
           sudo mv /tmp/deck /usr/local/bin/
           deck version
 

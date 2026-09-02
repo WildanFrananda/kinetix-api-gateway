@@ -26,18 +26,34 @@ secret-scan:
 
 config-valid:
   stage: verify
-  image:
-    name: kong/deck:latest
-    entrypoint: [""]
+  image: debian:bookworm-slim
   before_script:
-    - apk add --no-cache curl ca-certificates
+    - apt-get update -qq && apt-get install -y -qq --no-install-recommends curl ca-certificates
     - |
       case "$(uname -m)" in
-        aarch64|arm64) PKL_ARCH=linux-aarch64 ;;
-        *)             PKL_ARCH=linux-amd64 ;;
+        aarch64|arm64) PKL_ARCH=linux-aarch64; DECK_ARCH=linux_arm64 ;;
+        *)             PKL_ARCH=linux-amd64;   DECK_ARCH=linux_amd64 ;;
       esac
-      curl -sSL -o /usr/local/bin/pkl "https://github.com/apple/pkl/releases/download/0.32.1/pkl-${PKL_ARCH}"
+      curl -fsSL -o /usr/local/bin/pkl "https://github.com/apple/pkl/releases/download/0.32.1/pkl-${PKL_ARCH}"
       chmod +x /usr/local/bin/pkl
+      pkl --version
+    - |
+      # The release asset carries its version in the filename (deck_1.66.0_linux_amd64.tar.gz),
+      # so there is no stable "latest/download" path — that URL returns an HTML 404 page, which
+      # tar then reports as "gzip: stdin: not in gzip format". Resolve the tag first.
+      # The API response goes to a file before it is parsed. `curl | grep -m1` makes grep exit
+      # at the first match, which closes the pipe and fails curl with exit 23 — a download that
+      # succeeded, reported as an error, and fatal under pipefail.
+      curl -fsSL -o /tmp/deck-release.json https://api.github.com/repos/Kong/deck/releases/latest
+      DECK_VERSION="$(grep -m1 '"tag_name"' /tmp/deck-release.json | cut -d'"' -f4 | sed 's/^v//')"
+      test -n "$DECK_VERSION" || { echo "could not resolve the latest deck release"; exit 1; }
+      # Downloaded to a file, then extracted — not piped. `curl | tar` makes tar close the pipe
+      # as soon as it has the one file it wants, curl fails its write with exit 23, and under
+      # `pipefail` (which GitLab sets) that fails the job for a download that actually worked.
+      curl -fsSL -o /tmp/deck.tgz "https://github.com/Kong/deck/releases/download/v${DECK_VERSION}/deck_${DECK_VERSION}_${DECK_ARCH}.tar.gz"
+      tar -xzf /tmp/deck.tgz -C /usr/local/bin deck
+      rm -f /tmp/deck.tgz
+      deck version
   script:
     - pkl eval -f yaml config/gateway.pkl -o kong.yml
     - deck file validate kong.yml
@@ -47,6 +63,7 @@ config-valid:
          | grep -v '127.0.0.1:8080/health'; then
         echo "an upstream points outside the compose network"; exit 1
       fi
+      echo "every upstream is a service name"
   artifacts:
     paths:
       - kong.yml
