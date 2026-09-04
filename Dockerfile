@@ -43,17 +43,29 @@ FROM kong:3.9@sha256:2a8cf3b110cdaba1cb00adc665b8635ed1fc75c907f7a4298613c68e497
 # whole platform's ingress as uid 0.
 USER root
 COPY --from=pkl-builder /build/kong.yml /usr/local/kong/declarative/kong.yml
-RUN chown kong:kong /usr/local/kong/declarative/kong.yml
+COPY bin/entrypoint.sh /usr/local/bin/kinetix-entrypoint.sh
+RUN chown kong:kong /usr/local/kong/declarative/kong.yml && chmod 0755 /usr/local/bin/kinetix-entrypoint.sh
 USER kong
+
+ENTRYPOINT ["/usr/local/bin/kinetix-entrypoint.sh"]
+CMD ["kong", "docker-start"]
 
 ENV KONG_DATABASE=off
 ENV KONG_DECLARATIVE_CONFIG=/usr/local/kong/declarative/kong.yml
-# HTTP only for now. The 8443 listener was declared with no certificate configured, so it
-# served Kong's throwaway self-signed default — TLS that no client could verify. Real TLS
-# termination, and the removal of the plaintext listener, land with the trust boundary.
-ENV KONG_PROXY_LISTEN="0.0.0.0:8080"
 
-EXPOSE 8080
+# TLS only. There is deliberately no plaintext listener beside it: an 8080 that still answers is
+# an 8080 that clients keep using, and every token this gateway now verifies would travel in
+# clear text on the way to being verified. The previous 8443 listener was declared with no
+# certificate and served Kong's throwaway self-signed default, which no client could verify —
+# that is not the same as having TLS.
+#
+# The certificate and key are written by bin/entrypoint.sh from the environment; they are not in
+# this image.
+ENV KONG_PROXY_LISTEN="0.0.0.0:8443 ssl"
 
+EXPOSE 8443
+
+# `kong health` checks the local processes, not the listener, so it stays correct now that the
+# only listener speaks TLS.
 HEALTHCHECK --interval=10s --timeout=5s --start-period=20s --retries=3 \
     CMD kong health || exit 1

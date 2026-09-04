@@ -14,11 +14,31 @@
 # Driven from the kong.yml the image actually carries, not from a list maintained by hand:
 # a route added to gateway.pkl is tested by the next run without anyone remembering to add it.
 #
-# Usage:  test/route_conformance.sh [base-url]        (default http://localhost:8080)
+# Usage:  test/route_conformance.sh [base-url]        (default https://localhost:8443)
+#
+# The gateway serves TLS only. Its certificate is signed by a per-environment CA, so the CA has
+# to be on hand — set CA_FILE, or let this script take it from the infrastructure repo's
+# rendered .env. Verification is left on: without it this suite could not tell a real
+# certificate from a self-signed default.
 
 set -uo pipefail
 
-BASE="${1:-http://localhost:8080}"
+BASE="${1:-https://localhost:8443}"
+
+CA_FILE="${CA_FILE:-}"
+if [ -z "$CA_FILE" ]; then
+  ENV_FILE="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/kinetix-infrastructure/.env"
+  if [ -f "$ENV_FILE" ]; then
+    CA_FILE="$(mktemp)"
+    awk -F= '/^KINETIX_GATEWAY_TLS_CA_B64=/{print substr($0, index($0,"=")+1)}' "$ENV_FILE" \
+      | base64 -d > "$CA_FILE" 2>/dev/null || true
+  fi
+fi
+if [ ! -s "${CA_FILE:-/nonexistent}" ] || ! grep -q "BEGIN CERTIFICATE" "$CA_FILE" 2>/dev/null; then
+  echo "no gateway CA available. Set CA_FILE, or run bin/kinetix-secrets render dev in kinetix-infrastructure." >&2
+  exit 1
+fi
+CURL=(curl --cacert "$CA_FILE")
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 COMPOSE="$HERE/../kinetix-infrastructure/compose.yaml"
 
@@ -72,8 +92,8 @@ echo "── 2. Every declared public path reaches its upstream"
 # the application's own 404 proves the hop worked, which is exactly what this suite exists to
 # check. Only Kong's own 404 means the route is not wired.
 while IFS=$'\t' read -r svc url path; do
-  body="$(curl -s --max-time 10 "$BASE$path")"
-  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$BASE$path")"
+  body="$("${CURL[@]}" -s --max-time 10 "$BASE$path")"
+  code="$("${CURL[@]}" -s -o /dev/null -w '%{http_code}' --max-time 10 "$BASE$path")"
   case "$code" in
     000) bad "$path -> no response  ($svc)  gateway unreachable or timed out" ;;
     404)
@@ -91,7 +111,7 @@ echo
 echo "── 3. The 404 detector is not fooled"
 # Negative control. Check 2 passes an upstream 404, so it is only meaningful if a genuinely
 # unrouted path still fails. Without this the suite could pass by treating every 404 as fine.
-ctl="$(curl -s --max-time 10 "$BASE/definitely-not-a-declared-route")"
+ctl="$("${CURL[@]}" -s --max-time 10 "$BASE/definitely-not-a-declared-route")"
 if printf '%s' "$ctl" | grep -q 'no Route matched'; then
   ok "an undeclared path is refused by Kong, so check 2 can tell the two 404s apart"
 else
