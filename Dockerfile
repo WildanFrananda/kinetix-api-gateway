@@ -36,3 +36,6 @@ ENV KONG_DECLARATIVE_CONFIG=/usr/local/kong/declarative/kong.yml
 ENV KONG_PROXY_LISTEN="0.0.0.0:8080"
 
 EXPOSE 8080
+
+HEALTHCHECK --interval=10s --timeout=5s --start-period=20s --retries=3 \
+    CMD kong health || exit 1
