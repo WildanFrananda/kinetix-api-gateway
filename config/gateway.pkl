@@ -14,6 +14,19 @@
 // `strip_path` is false — nothing is rewritten. Where they differ, the service carries the
 // upstream prefix and `strip_path` is true.
 
+// The identity service's PUBLIC signing key, passed in at build time:
+//
+//     pkl eval -p identityJwtPublicKey="$(cat public.pem)" -f yaml gateway.pkl
+//
+// `hidden` keeps it out of the rendered YAML — Kong would reject an unknown top-level key, and
+// the value belongs inside the consumer credential below, not beside `services`.
+//
+// It is passed in rather than committed because there is one key per environment and a
+// committed constant would be dev's. It is derived from the private key held in SOPS, so the
+// two rotate together; a gateway holding a stale public key refuses every token the service
+// issues, which is why the S6 gate asserts this key matches the live JWKS document.
+hidden identityJwtPublicKey: String = read("prop:identityJwtPublicKey")
+
 _format_version = "3.0"
 _transform = true
 
@@ -52,13 +65,39 @@ services {
     url = "http://kinetix-identity-service:5000"
     routes {
       new {
-        name = "identity-route"
+        name = "identity-public-route"
+        paths {
+          "/api/v1/auth/login"
+          "/api/v1/auth/register"
+          "/api/v1/auth/refresh"
+        }
+        strip_path = false
+      }
+
+      new {
+        name = "identity-jwks-route"
+        paths { "/.well-known/jwks.json" }
+        strip_path = false
+      }
+
+      new {
+        name = "identity-protected-route"
         paths {
           "/api/v1/auth"
           "/api/v1/users"
           "/api/v1/sellers"
         }
         strip_path = false
+        plugins {
+          new {
+            name = "jwt"
+            config {
+              key_claim_name = "iss"
+              claims_to_verify { "exp" }
+              run_on_preflight = false
+            }
+          }
+        }
       }
     }
   }
@@ -206,12 +245,36 @@ services {
   }
 }
 
+// The one issuer this gateway trusts.
+//
+// A consumer, in Kong's vocabulary, is whoever a credential belongs to — here it is the identity
+// service itself, because identity is the only thing on this platform that may sign a token.
+// Adding a second entry would mean a second minter, which is exactly what S6 exists to prevent.
+consumers {
+  new {
+    username = "kinetix-identity"
+    jwt_secrets {
+      new {
+        // Matched against the token's `iss`. It is a string identifier, not a URL Kong fetches.
+        key = "https://identity.kinetix.local"
+        algorithm = "RS256"
+        rsa_public_key = identityJwtPublicKey
+      }
+    }
+  }
+}
+
 // Global plugins.
 //
-// Authentication is deliberately absent here and is not an oversight: the JWT boundary,
-// the revocation check and the removal of X-User-Id land together in S6. Until then this
-// gateway routes but does not authenticate, and every service behind it must assume the
-// caller is anonymous.
+// Authentication is NOT global, and that is deliberate. It is attached to the identity
+// service's protected route above, so login, registration, refresh and JWKS stay reachable
+// without a token.
+//
+// The routes to catalog, order, warehouse, pricing and payment are still unauthenticated. Those
+// services identify their caller from a client-supplied `X-User-Id` header, which is the defect
+// S7/S8 removes by giving them a verified identity to read instead. Turning JWT on for them
+// today would not make them secure — it would make them unreachable, while leaving the header
+// they actually trust just as forgeable.
 plugins {
   new {
     name = "cors"
@@ -229,6 +292,13 @@ plugins {
       minute = 100
       policy = "local"
       fault_tolerant = true
+      // Per client address, not per Kong consumer, which is the default.
+      //
+      // The JWT credential identifies the ISSUER — identity — because it is matched on the
+      // `iss` claim, so every authenticated request maps to the same consumer. Left at the
+      // default they would share one 100/minute bucket, and a single busy client could
+      // rate-limit everybody. Anonymous traffic was already limited per address.
+      limit_by = "ip"
     }
   }
 }

@@ -13,7 +13,25 @@ WORKDIR /app
 
 COPY config/ .
 
-RUN mkdir -p /build && pkl eval -f yaml gateway.pkl -o /build/kong.yml
+# Base64, because a build ARG cannot carry the newlines a PEM is made of.
+ARG KINETIX_IDENTITY_JWT_PUBLIC_KEY_B64
+
+# Each step asserts its own result. A gateway that builds without a verification key would
+# start, route, and authenticate nothing.
+RUN set -eu; \
+    if [ -z "${KINETIX_IDENTITY_JWT_PUBLIC_KEY_B64:-}" ]; then \
+      echo "KINETIX_IDENTITY_JWT_PUBLIC_KEY_B64 is required: the gateway cannot verify tokens without identity's public key."; \
+      exit 1; \
+    fi; \
+    echo "$KINETIX_IDENTITY_JWT_PUBLIC_KEY_B64" | base64 -d > /tmp/identity-public.pem; \
+    if ! grep -q "BEGIN PUBLIC KEY" /tmp/identity-public.pem; then \
+      echo "the decoded value is not a PEM public key"; exit 1; \
+    fi; \
+    mkdir -p /build; \
+    pkl eval -p identityJwtPublicKey="$(cat /tmp/identity-public.pem)" -f yaml gateway.pkl -o /build/kong.yml; \
+    if ! grep -q "rsa_public_key" /build/kong.yml; then \
+      echo "the rendered config carries no verification key"; exit 1; \
+    fi
 
 # Pin the Kong minor rather than `latest`: the gateway is the platform's only published
 # surface, and `latest` means a rebuild can change what terminates every request without a
