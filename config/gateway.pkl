@@ -160,6 +160,16 @@ services {
         name = "matching-route"
         paths { "/api/v1/matching" }
         strip_path = true
+        plugins {
+          new {
+            name = "jwt"
+            config {
+              key_claim_name = "iss"
+              claims_to_verify { "exp" }
+              run_on_preflight = false
+            }
+          }
+        }
       }
     }
   }
