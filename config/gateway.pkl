@@ -241,6 +241,16 @@ services {
         name = "payment-route"
         paths { "/api/v1/payment" }
         strip_path = false
+        plugins {
+          new {
+            name = "jwt"
+            config {
+              key_claim_name = "iss"
+              claims_to_verify { "exp" }
+              run_on_preflight = false
+            }
+          }
+        }
       }
     }
   }
@@ -271,11 +281,6 @@ consumers {
 // service's protected route above, so login, registration, refresh and JWKS stay reachable
 // without a token.
 //
-// The routes to catalog, order, warehouse, pricing and payment are still unauthenticated. Those
-// services identify their caller from a client-supplied `X-User-Id` header, which is the defect
-// S7/S8 removes by giving them a verified identity to read instead. Turning JWT on for them
-// today would not make them secure — it would make them unreachable, while leaving the header
-// they actually trust just as forgeable.
 plugins {
   new {
     name = "cors"
