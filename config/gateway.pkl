@@ -297,9 +297,18 @@ plugins {
     config {
       origins { "*" }
       methods { "GET"; "POST"; "PUT"; "PATCH"; "DELETE"; "OPTIONS" }
-      headers { "Accept"; "Authorization"; "Content-Type"; "Idempotency-Key"; "X-Requested-With" }
+      headers { "Accept"; "Authorization"; "Content-Type"; "Idempotency-Key"; "X-Request-Id"; "X-Requested-With" }
       credentials = true
+      exposed_headers { "X-Request-Id" }
       max_age = 3600
+    }
+  }
+  new {
+    name = "correlation-id"
+    config {
+      header_name = "X-Request-Id"
+      generator = "uuid"
+      echo_downstream = true
     }
   }
   new {
