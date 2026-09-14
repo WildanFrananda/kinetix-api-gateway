@@ -248,6 +248,17 @@ services {
     url = "http://kinetix-payment-service:8003"
     routes {
       new {
+        // Midtrans reports a payment by calling this path, and Midtrans cannot present an identity
+        // token, so this route alone carries no jwt plugin. It is not open: payment verifies the
+        // notification's SHA-512 signature, then asks Midtrans itself for the transaction's status
+        // before a rupiah moves. POST only, and the regex is anchored at both ends, so the exemption
+        // covers this one path and cannot widen to anything else under /api/v1/payment.
+        name = "payment-midtrans-notifications"
+        paths { "~/api/v1/payment/gateway/midtrans/notifications$" }
+        methods { "POST" }
+        strip_path = false
+      }
+      new {
         name = "payment-route"
         paths { "/api/v1/payment" }
         strip_path = false
