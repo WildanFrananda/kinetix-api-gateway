@@ -41,11 +41,33 @@ jobs:
           sudo mv /tmp/deck /usr/local/bin/
           deck version
 
+      # The container renders this config at start from its environment's key, issuer and origins. CI
+      # supplies throwaway ones: a key pair generated here and discarded, names that resolve nowhere.
       - name: Evaluate the Pkl config
-        run: pkl eval -f yaml config/gateway.pkl -o kong.yml
+        run: |
+          openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out /tmp/throwaway.pem 2>/dev/null
+          openssl pkey -in /tmp/throwaway.pem -pubout -out /tmp/throwaway-public.pem
+          render() {
+            pkl eval -p identityJwtPublicKey="$(cat /tmp/throwaway-public.pem)" \
+                     -p jwtIssuer=https://identity.ci.invalid -p corsOrigins="$1" \
+                     -f yaml config/gateway.pkl -o "$2"
+          }
+          render "https://app.ci.invalid" kong.yml
+          render "" kong-no-cors.yml
+          # No browser origins must mean no cors plugin: Kong's cors plugin with no origins answers `*`.
+          if grep -q 'name: cors' kong-no-cors.yml; then
+            echo "an empty origin list still rendered the cors plugin"; exit 1
+          fi
+          # `*` beside a named origin is a contradiction, and must not evaluate.
+          if render "*,https://app.ci.invalid" /tmp/contradiction.yml 2>/dev/null; then
+            echo "'*' combined with another origin was accepted"; exit 1
+          fi
+          echo "config renders with origins, without them, and refuses a contradiction"
 
       - name: Kong must accept it
-        run: deck file validate kong.yml
+        run: |
+          deck file validate kong.yml
+          deck file validate kong-no-cors.yml
 
       # Every upstream has to be a compose service name. A localhost or host.docker.internal
       # address routes to the gateway container itself, which is how a config can look correct

@@ -28,7 +28,7 @@ config-valid:
   stage: verify
   image: debian:bookworm-slim
   before_script:
-    - apt-get update -qq && apt-get install -y -qq --no-install-recommends curl ca-certificates
+    - apt-get update -qq && apt-get install -y -qq --no-install-recommends curl ca-certificates openssl
     - |
       case "$(uname -m)" in
         aarch64|arm64) PKL_ARCH=linux-aarch64; DECK_ARCH=linux_arm64 ;;
@@ -55,12 +55,35 @@ config-valid:
       rm -f /tmp/deck.tgz
       deck version
   script:
-    - pkl eval -f yaml config/gateway.pkl -o kong.yml
+    # The container renders this config at start from its environment's key, issuer and origins. CI
+    # supplies throwaway ones: a key pair generated here and discarded, names that resolve nowhere.
+    - |
+      openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out /tmp/throwaway.pem 2>/dev/null
+      openssl pkey -in /tmp/throwaway.pem -pubout -out /tmp/throwaway-public.pem
+      render() {
+        pkl eval -p identityJwtPublicKey="$(cat /tmp/throwaway-public.pem)" \
+                 -p jwtIssuer=https://identity.ci.invalid -p corsOrigins="$1" \
+                 -f yaml config/gateway.pkl -o "$2"
+      }
+      render "https://app.ci.invalid" kong.yml
+      render "" kong-no-cors.yml
+      # No browser origins must mean no cors plugin: Kong's cors plugin with no origins answers `*`.
+      if grep -q 'name: cors' kong-no-cors.yml; then
+        echo "an empty origin list still rendered the cors plugin"; exit 1
+      fi
+      # `*` beside a named origin is a contradiction, and must not evaluate.
+      if render "*,https://app.ci.invalid" /tmp/contradiction.yml 2>/dev/null; then
+        echo "'*' combined with another origin was accepted"; exit 1
+      fi
+      echo "config renders with origins, without them, and refuses a contradiction"
     - deck file validate kong.yml
+    - deck file validate kong-no-cors.yml
     # Every upstream must be a compose service name, never localhost or a host-network escape.
+    # 8443: the health route's own upstream. This said 8080 after the plaintext listener was removed,
+    # which made the exemption match nothing — the paired GitHub file had already moved to 8443.
     - |
       if grep -nE 'url: https?://(localhost|host\.docker\.internal|127\.0\.0\.1)' kong.yml \
-         | grep -v '127.0.0.1:8080/health'; then
+         | grep -v '127.0.0.1:8443/health'; then
         echo "an upstream points outside the compose network"; exit 1
       fi
       echo "every upstream is a service name"

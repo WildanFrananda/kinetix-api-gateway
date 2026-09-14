@@ -1,5 +1,5 @@
 FROM debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171 AS pkl-builder
-RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates openssl && rm -rf /var/lib/apt/lists/*
 
 ARG TARGETARCH
 RUN ARCH=$(uname -m) && \
@@ -13,38 +13,37 @@ WORKDIR /app
 
 COPY config/ .
 
-# Base64, because a build ARG cannot carry the newlines a PEM is made of.
-ARG KINETIX_IDENTITY_JWT_PUBLIC_KEY_B64
-
-# Each step asserts its own result. A gateway that builds without a verification key would
-# start, route, and authenticate nothing.
+# The config is rendered when the container starts (bin/entrypoint.sh), from the identity public key,
+# issuer and browser origins of the environment it starts in, so this image carries none of them and
+# the same digest runs everywhere. This step only proves, at build time, that the Pkl evaluates and
+# yields a verification key — with a key pair generated here and discarded with this stage.
 RUN set -eu; \
-    if [ -z "${KINETIX_IDENTITY_JWT_PUBLIC_KEY_B64:-}" ]; then \
-      echo "KINETIX_IDENTITY_JWT_PUBLIC_KEY_B64 is required: the gateway cannot verify tokens without identity's public key."; \
-      exit 1; \
-    fi; \
-    echo "$KINETIX_IDENTITY_JWT_PUBLIC_KEY_B64" | base64 -d > /tmp/identity-public.pem; \
-    if ! grep -q "BEGIN PUBLIC KEY" /tmp/identity-public.pem; then \
-      echo "the decoded value is not a PEM public key"; exit 1; \
-    fi; \
-    mkdir -p /build; \
-    pkl eval -p identityJwtPublicKey="$(cat /tmp/identity-public.pem)" -f yaml gateway.pkl -o /build/kong.yml; \
-    if ! grep -q "rsa_public_key" /build/kong.yml; then \
+    openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out /tmp/throwaway.pem 2>/dev/null; \
+    openssl pkey -in /tmp/throwaway.pem -pubout -out /tmp/throwaway-public.pem; \
+    pkl eval -p identityJwtPublicKey="$(cat /tmp/throwaway-public.pem)" \
+             -p jwtIssuer=https://identity.build.invalid \
+             -p corsOrigins= \
+             -f yaml gateway.pkl -o /tmp/kong.yml; \
+    if ! grep -q "rsa_public_key" /tmp/kong.yml; then \
       echo "the rendered config carries no verification key"; exit 1; \
-    fi
+    fi; \
+    rm -f /tmp/throwaway.pem /tmp/throwaway-public.pem /tmp/kong.yml
 
 # Pin the Kong minor rather than `latest`: the gateway is the platform's only published
 # surface, and `latest` means a rebuild can change what terminates every request without a
 # single line of this repository changing.
 FROM kong:3.9@sha256:2a8cf3b110cdaba1cb00adc665b8635ed1fc75c907f7a4298613c68e4976de0a
 
-# root only long enough to place the generated config, then drop back to the image's own
-# unprivileged user. The previous `USER root` was never reversed, so the gateway ran the
-# whole platform's ingress as uid 0.
+# root only long enough to place pkl, the config source and the entrypoint, and to hand the declarative
+# directory to Kong's user, which writes kong.yml there at start. The previous `USER root` was never
+# reversed, so the gateway ran the whole platform's ingress as uid 0.
 USER root
-COPY --from=pkl-builder /build/kong.yml /usr/local/kong/declarative/kong.yml
+COPY --from=pkl-builder /usr/local/bin/pkl /usr/local/bin/pkl
+COPY config/gateway.pkl /usr/local/kong/kinetix/gateway.pkl
 COPY bin/entrypoint.sh /usr/local/bin/kinetix-entrypoint.sh
-RUN chown kong:kong /usr/local/kong/declarative/kong.yml && chmod 0755 /usr/local/bin/kinetix-entrypoint.sh
+RUN mkdir -p /usr/local/kong/declarative \
+    && chown kong:kong /usr/local/kong/declarative \
+    && chmod 0755 /usr/local/bin/kinetix-entrypoint.sh /usr/local/bin/pkl
 USER kong
 
 ENTRYPOINT ["/usr/local/bin/kinetix-entrypoint.sh"]
@@ -59,8 +58,8 @@ ENV KONG_DECLARATIVE_CONFIG=/usr/local/kong/declarative/kong.yml
 # certificate and served Kong's throwaway self-signed default, which no client could verify —
 # that is not the same as having TLS.
 #
-# The certificate and key are written by bin/entrypoint.sh from the environment; they are not in
-# this image.
+# The certificate and key are placed by bin/entrypoint.sh from files or from the environment; they
+# are not in this image.
 ENV KONG_PROXY_LISTEN="0.0.0.0:8443 ssl"
 
 EXPOSE 8443

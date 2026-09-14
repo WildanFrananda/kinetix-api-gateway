@@ -14,18 +14,32 @@
 // `strip_path` is false — nothing is rewritten. Where they differ, the service carries the
 // upstream prefix and `strip_path` is true.
 
-// The identity service's PUBLIC signing key, passed in at build time:
+// Three values differ between environments, and bin/entrypoint.sh passes all three in when the
+// container starts, so one image serves the lab and production alike:
 //
-//     pkl eval -p identityJwtPublicKey="$(cat public.pem)" -f yaml gateway.pkl
+//     pkl eval -p identityJwtPublicKey="$(cat public.pem)" -p jwtIssuer=https://identity.kinetix.local \
+//              -p corsOrigins='*' -f yaml gateway.pkl
 //
-// `hidden` keeps it out of the rendered YAML — Kong would reject an unknown top-level key, and
-// the value belongs inside the consumer credential below, not beside `services`.
-//
-// It is passed in rather than committed because there is one key per environment and a
-// committed constant would be dev's. It is derived from the private key held in SOPS, so the
-// two rotate together; a gateway holding a stale public key refuses every token the service
+// They used to be a build argument and two literals, which made every image fit exactly one
+// environment: production would have needed its own build, and the digest CI scanned would not have
+// been the digest that ran. `hidden` keeps them out of the rendered YAML, where Kong would reject an
+// unknown top-level key.
+
+// The identity service's PUBLIC signing key. It is derived from the private key held in SOPS, so
+// the two rotate together; a gateway holding a stale public key refuses every token the service
 // issues, which is why the S6 gate asserts this key matches the live JWKS document.
 hidden identityJwtPublicKey: String = read("prop:identityJwtPublicKey")
+
+// The one issuer this gateway trusts, matched against each token's `iss`. It differs per environment
+// so that a correctly signed token minted for another environment is still refused here.
+hidden jwtIssuer: String(!isEmpty) = read("prop:jwtIssuer")
+
+// The browser origins allowed to read responses, comma-separated. Empty is allowed and means none:
+// the cors plugin is then left out entirely, because Kong's cors plugin with no origins configured
+// answers `*`. `*` may only stand alone.
+hidden corsOriginsProp: String = read("prop:corsOrigins")
+hidden corsOrigins: List<String(this == "*" || matches(Regex(#"https?://[a-z0-9.-]+(:[0-9]+)?"#)))>(!contains("*") || length == 1) =
+  corsOriginsProp.split(",").map((origin) -> origin.trim()).filter((origin) -> !origin.isEmpty)
 
 _format_version = "3.0"
 _transform = true
@@ -241,8 +255,10 @@ services {
   }
 
   // ── payment :8003 ─────────────────────────────────────────────────────────────────
-  // Spring serves /api/v1/payment/{checkout,wallet,escrow}. Same defect as order-service:
-  // POST /api/v1/payment/checkout/pay arrived upstream as /api/v1/checkout/pay.
+  // Spring serves /api/v1/payment/{wallet,escrow,gateway}, so the public path is the upstream path and
+  // nothing is stripped — stripping the prefix is the defect order-service had. (POST
+  // /api/v1/payment/checkout/pay was removed on 2026-09-14: it built an escrow hold from amounts the
+  // client sent, and checkout runs order → payment over gRPC.)
   new {
     name = "payment-service"
     url = "http://kinetix-payment-service:8003"
@@ -288,7 +304,7 @@ consumers {
     jwt_secrets {
       new {
         // Matched against the token's `iss`. It is a string identifier, not a URL Kong fetches.
-        key = "https://identity.kinetix.local"
+        key = jwtIssuer
         algorithm = "RS256"
         rsa_public_key = identityJwtPublicKey
       }
@@ -303,15 +319,19 @@ consumers {
 // without a token.
 //
 plugins {
-  new {
-    name = "cors"
-    config {
-      origins { "*" }
-      methods { "GET"; "POST"; "PUT"; "PATCH"; "DELETE"; "OPTIONS" }
-      headers { "Accept"; "Authorization"; "Content-Type"; "Idempotency-Key"; "X-Request-Id"; "X-Requested-With" }
-      credentials = true
-      exposed_headers { "X-Request-Id" }
-      max_age = 3600
+  when (!corsOrigins.isEmpty) {
+    new {
+      name = "cors"
+      config {
+        origins { for (origin in corsOrigins) { origin } }
+        methods { "GET"; "POST"; "PUT"; "PATCH"; "DELETE"; "OPTIONS" }
+        headers { "Accept"; "Authorization"; "Content-Type"; "Idempotency-Key"; "X-Request-Id"; "X-Requested-With" }
+        // Tokens travel in the Authorization header, never in a cookie, so no response has to be
+        // readable with credentials. `true` beside `*` was also a pairing browsers reject outright.
+        credentials = false
+        exposed_headers { "X-Request-Id" }
+        max_age = 3600
+      }
     }
   }
   new {
