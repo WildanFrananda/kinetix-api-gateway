@@ -38,7 +38,11 @@ jobs:
       # A tag on a branch nobody reviewed would deploy code that never passed the merge gate.
       - name: The tagged commit must be reachable from main
         run: |
-          git fetch --no-tags --depth=0 origin main
+          # No --depth: `actions/checkout` above already uses fetch-depth: 0, so the history is
+          # complete and this only needs origin/main to exist as a ref. `--depth=0` is not "all
+          # of it" — git rejects it outright with "depth 0 is not a positive number", which is
+          # how the first release tag ever cut died before it promoted anything.
+          git fetch --no-tags origin main
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main \
             || { echo "$GITHUB_SHA is not on main — cut releases from main only"; exit 1; }
 
@@ -72,8 +76,14 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.KINETIX_DISPATCH_TOKEN }}
         run: |
+          # "not set" was the original wording and it sent the first real release hunting for a
+          # missing secret that was in fact present. `gh secret list` shows a name whatever the value
+          # is, so a secret stored as an empty string looks identical to a correct one from outside.
           if [ -z "$GH_TOKEN" ]; then
-            echo "KINETIX_DISPATCH_TOKEN is not set in this repository's secrets"
+            echo "KINETIX_DISPATCH_TOKEN resolved to an empty value."
+            echo "The secret may exist and still be empty — a name in \`gh secret list\` proves nothing"
+            echo "about its contents. Re-set it: docs/DISPATCH-TOKEN.md section 3, then check with"
+            echo "section 4, which sends a dispatch using the token itself."
             exit 1
           fi
           jq -n \
