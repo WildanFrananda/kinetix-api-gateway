@@ -76,8 +76,14 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.KINETIX_DISPATCH_TOKEN }}
         run: |
+          # "not set" was the original wording and it sent the first real release hunting for a
+          # missing secret that was in fact present. `gh secret list` shows a name whatever the value
+          # is, so a secret stored as an empty string looks identical to a correct one from outside.
           if [ -z "$GH_TOKEN" ]; then
-            echo "KINETIX_DISPATCH_TOKEN is not set in this repository's secrets"
+            echo "KINETIX_DISPATCH_TOKEN resolved to an empty value."
+            echo "The secret may exist and still be empty — a name in \`gh secret list\` proves nothing"
+            echo "about its contents. Re-set it: docs/DISPATCH-TOKEN.md section 3, then check with"
+            echo "section 4, which sends a dispatch using the token itself."
             exit 1
           fi
           jq -n \
