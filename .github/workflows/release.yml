@@ -38,7 +38,11 @@ jobs:
       # A tag on a branch nobody reviewed would deploy code that never passed the merge gate.
       - name: The tagged commit must be reachable from main
         run: |
-          git fetch --no-tags --depth=0 origin main
+          # No --depth: `actions/checkout` above already uses fetch-depth: 0, so the history is
+          # complete and this only needs origin/main to exist as a ref. `--depth=0` is not "all
+          # of it" — git rejects it outright with "depth 0 is not a positive number", which is
+          # how the first release tag ever cut died before it promoted anything.
+          git fetch --no-tags origin main
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main \
             || { echo "$GITHUB_SHA is not on main — cut releases from main only"; exit 1; }
 
