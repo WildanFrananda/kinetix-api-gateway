@@ -307,6 +307,11 @@ consumers {
         key = jwtIssuer
         algorithm = "RS256"
         rsa_public_key = identityJwtPublicKey
+        // `secret` is the HS256 shared key, which this credential can never use: its algorithm is RS256,
+        // so Kong verifies with the public key above and nothing else. Kong accepts the credential without
+        // this field — it generates one — but `deck file validate` refuses the file, so the value is
+        // written here, fixed and obviously inert, rather than left to a generator nobody sees.
+        secret = "unused-this-credential-verifies-with-rs256"
       }
     }
   }
