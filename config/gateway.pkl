@@ -273,6 +273,30 @@ services {
         paths { "~/api/v1/payment/gateway/midtrans/notifications$" }
         methods { "POST" }
         strip_path = false
+        plugins {
+          // The global limit is 100/minute per address. That is right for a browser and wrong here.
+          // Midtrans sends from a pool of its own addresses — four distinct ones inside one minute
+          // during testing — and every settlement this platform takes arrives through them. A refusal
+          // here is not a slow page for one user: it is a payment that never becomes settled, while
+          // the customer has already paid.
+          //
+          // The ceiling stays, because this route is unauthenticated and a ceiling is what keeps it
+          // from being a free amplifier. It is simply set where only abuse reaches it: 600/minute is
+          // ten settlements a second from a single Midtrans address, far above anything this platform
+          // will see before it is large enough to measure properly.
+          //
+          // And a refusal is no longer silent — see the prometheus plugin below, and payment's
+          // reconciliation of PENDING top-ups, which recovers a notification lost to any cause.
+          new {
+            name = "rate-limiting"
+            config {
+              minute = 600
+              policy = "local"
+              fault_tolerant = true
+              limit_by = "ip"
+            }
+          }
+        }
       }
       new {
         name = "payment-route"
@@ -345,6 +369,24 @@ plugins {
       header_name = "X-Request-Id"
       generator = "uuid"
       echo_downstream = true
+    }
+  }
+  // Kong was invisible until now: no metrics, no scrape target, so everything it refused before a
+  // service ever saw it — 429, 401 on a missing token, 404 on an unrouted path — existed only in an
+  // access log nothing alerted on. The edge is where the most consequential refusals happen, and a
+  // rate-limited Midtrans notification is the example that matters: money taken, nothing settled,
+  // and no signal anywhere.
+  //
+  // `per_consumer` stays off. This platform has exactly one consumer, identity as the token issuer,
+  // so the label would add cardinality and say nothing.
+  new {
+    name = "prometheus"
+    config {
+      status_code_metrics = true
+      latency_metrics = true
+      bandwidth_metrics = false
+      upstream_health_metrics = true
+      per_consumer = false
     }
   }
   new {
