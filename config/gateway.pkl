@@ -1,42 +1,7 @@
-// Kinetix API gateway — Kong DB-less declarative config. (S2 / P1-GW-01, P1-GW-02)
-//
-// Two rules govern every entry below.
-//
-//   1. THE UPSTREAM HOST IS A COMPOSE SERVICE NAME. `kinetix-<svc>-service` is the DNS name
-//      on the `kinetix` network. Renaming a service in compose.yaml breaks the route here.
-//
-//   2. THE PUBLIC PATH AND THE UPSTREAM PATH ARE STATED TOGETHER. Each service records what
-//      it actually serves, because `strip_path` is only correct relative to that. Kong strips
-//      the matched ROUTE path and appends the remainder to the SERVICE path. Getting this
-//      backwards is why four services returned 404 and three worked only by coincidence.
-//
-// Where the public path already equals the upstream path, the service carries no path and
-// `strip_path` is false — nothing is rewritten. Where they differ, the service carries the
-// upstream prefix and `strip_path` is true.
-
-// Three values differ between environments, and bin/entrypoint.sh passes all three in when the
-// container starts, so one image serves the lab and production alike:
-//
-//     pkl eval -p identityJwtPublicKey="$(cat public.pem)" -p jwtIssuer=https://identity.kinetix.local \
-//              -p corsOrigins='*' -f yaml gateway.pkl
-//
-// They used to be a build argument and two literals, which made every image fit exactly one
-// environment: production would have needed its own build, and the digest CI scanned would not have
-// been the digest that ran. `hidden` keeps them out of the rendered YAML, where Kong would reject an
-// unknown top-level key.
-
-// The identity service's PUBLIC signing key. It is derived from the private key held in SOPS, so
-// the two rotate together; a gateway holding a stale public key refuses every token the service
-// issues, which is why the S6 gate asserts this key matches the live JWKS document.
 hidden identityJwtPublicKey: String = read("prop:identityJwtPublicKey")
 
-// The one issuer this gateway trusts, matched against each token's `iss`. It differs per environment
-// so that a correctly signed token minted for another environment is still refused here.
 hidden jwtIssuer: String(!isEmpty) = read("prop:jwtIssuer")
 
-// The browser origins allowed to read responses, comma-separated. Empty is allowed and means none:
-// the cors plugin is then left out entirely, because Kong's cors plugin with no origins configured
-// answers `*`. `*` may only stand alone.
 hidden corsOriginsProp: String = read("prop:corsOrigins")
 hidden corsOrigins: List<String(this == "*" || matches(Regex(#"https?://[a-z0-9.-]+(:[0-9]+)?"#)))>(!contains("*") || length == 1) =
   corsOriginsProp.split(",").map((origin) -> origin.trim()).filter((origin) -> !origin.isEmpty)
@@ -45,8 +10,6 @@ _format_version = "3.0"
 _transform = true
 
 services {
-  // ── health ────────────────────────────────────────────────────────────────────────
-  // Answered by Kong itself; never reaches an upstream.
   new {
     name = "health-service"
     url = "http://127.0.0.1:8443/health"
@@ -69,11 +32,6 @@ services {
     }
   }
 
-  // ── identity :5000 ────────────────────────────────────────────────────────────────
-  // NestJS now serves /api/v1/auth, /api/v1/users and /api/v1/sellers — identical to the
-  // public paths, so nothing is rewritten and one service covers all three. Previously the
-  // upstream had no `v1` segment, which forced a separate Kong service per prefix just to
-  // put the version back on.
   new {
     name = "identity-service"
     url = "http://kinetix-identity-service:5000"
@@ -101,6 +59,7 @@ services {
           "/api/v1/auth"
           "/api/v1/users"
           "/api/v1/sellers"
+          "/api/v1/couriers"
         }
         strip_path = false
         plugins {
@@ -117,12 +76,6 @@ services {
     }
   }
 
-  // ── catalog :8000 ─────────────────────────────────────────────────────────────────
-  // Django serves /api/products/ and /api/categories/. One service pointing at /api with
-  // routes for both resources collapsed /api/v1/products/ to /api/ — the resource name was
-  // stripped and never restored, so every catalog request 404'd. One service per resource.
-  //
-  // /api/v1/brands is gone: core/urls.py has no brands route. It was a public path to nothing.
   new {
     name = "catalog-products"
     url = "http://kinetix-catalog-service:8000/api/products"
@@ -147,10 +100,6 @@ services {
     }
   }
 
-  // ── warehouse :3000 ───────────────────────────────────────────────────────────────
-  // Rails serves /api/v1/orders and /api/v1/returns. Public traffic is namespaced under
-  // /api/v1/warehouse so it does not collide with order-service, which also owns
-  // /api/v1/orders. Strip the namespace, keep the resource.
   new {
     name = "warehouse-service"
     url = "http://kinetix-warehouse-service:3000/api/v1"
@@ -163,9 +112,6 @@ services {
     }
   }
 
-  // ── matching :4000 ────────────────────────────────────────────────────────────────
-  // Phoenix serves /api/v1/drivers, /api/v1/orders/:id, /api/v1/merchant/orders and
-  // /api/v1/shipping/options. Same namespacing rationale as warehouse.
   new {
     name = "matching-service"
     url = "http://kinetix-matching-service:4000/api/v1"
@@ -188,8 +134,6 @@ services {
     }
   }
 
-  // The driver socket. One public path, not two: /socket/websocket was also exposed
-  // directly, which published Phoenix's internal transport path as a second entry point.
   new {
     name = "matching-websocket"
     url = "http://kinetix-matching-service:4000/socket/websocket"
@@ -203,12 +147,6 @@ services {
     }
   }
 
-  // Removed: `matching-sse` pointed at /api/v1/telemetry/stream, which does not exist in
-  // FleetPulseWeb.Router. It was a public path to a 404, like /api/v1/brands.
-
-  // ── pricing :6000 ─────────────────────────────────────────────────────────────────
-  // Rocket serves /api/v1/vouchers, /api/v1/discounts, /api/v1/flash-sales. There is no
-  // /api/v1/pricing upstream: the namespace exists only at the gateway and is stripped.
   new {
     name = "pricing-service"
     url = "http://kinetix-pricing-service:6000/api/v1"
@@ -221,10 +159,6 @@ services {
     }
   }
 
-  // ── order :8001 ───────────────────────────────────────────────────────────────────
-  // ASP.NET serves /api/v1/orders and /api/v1/cart — identical to the public path, so
-  // nothing is rewritten. Previously the service carried /api/v1 AND the route stripped
-  // /api/v1/orders, so GET /api/v1/orders/1 arrived upstream as /api/v1/1.
   new {
     name = "order-service"
     url = "http://kinetix-order-service:8001"
@@ -240,8 +174,6 @@ services {
     }
   }
 
-  // ── review :8002 ──────────────────────────────────────────────────────────────────
-  // Laravel serves /api/v1/reviews/*. Same defect as order-service, same fix.
   new {
     name = "review-service"
     url = "http://kinetix-review-service:8002"
@@ -254,39 +186,16 @@ services {
     }
   }
 
-  // ── payment :8003 ─────────────────────────────────────────────────────────────────
-  // Spring serves /api/v1/payment/{wallet,escrow,gateway}, so the public path is the upstream path and
-  // nothing is stripped — stripping the prefix is the defect order-service had. (POST
-  // /api/v1/payment/checkout/pay was removed on 2026-09-14: it built an escrow hold from amounts the
-  // client sent, and checkout runs order → payment over gRPC.)
   new {
     name = "payment-service"
     url = "http://kinetix-payment-service:8003"
     routes {
       new {
-        // Midtrans reports a payment by calling this path, and Midtrans cannot present an identity
-        // token, so this route alone carries no jwt plugin. It is not open: payment verifies the
-        // notification's SHA-512 signature, then asks Midtrans itself for the transaction's status
-        // before a rupiah moves. POST only, and the regex is anchored at both ends, so the exemption
-        // covers this one path and cannot widen to anything else under /api/v1/payment.
         name = "payment-midtrans-notifications"
         paths { "~/api/v1/payment/gateway/midtrans/notifications$" }
         methods { "POST" }
         strip_path = false
         plugins {
-          // The global limit is 100/minute per address. That is right for a browser and wrong here.
-          // Midtrans sends from a pool of its own addresses — four distinct ones inside one minute
-          // during testing — and every settlement this platform takes arrives through them. A refusal
-          // here is not a slow page for one user: it is a payment that never becomes settled, while
-          // the customer has already paid.
-          //
-          // The ceiling stays, because this route is unauthenticated and a ceiling is what keeps it
-          // from being a free amplifier. It is simply set where only abuse reaches it: 600/minute is
-          // ten settlements a second from a single Midtrans address, far above anything this platform
-          // will see before it is large enough to measure properly.
-          //
-          // And a refusal is no longer silent — see the prometheus plugin below, and payment's
-          // reconciliation of PENDING top-ups, which recovers a notification lost to any cause.
           new {
             name = "rate-limiting"
             config {
@@ -317,36 +226,20 @@ services {
   }
 }
 
-// The one issuer this gateway trusts.
-//
-// A consumer, in Kong's vocabulary, is whoever a credential belongs to — here it is the identity
-// service itself, because identity is the only thing on this platform that may sign a token.
-// Adding a second entry would mean a second minter, which is exactly what S6 exists to prevent.
 consumers {
   new {
     username = "kinetix-identity"
     jwt_secrets {
       new {
-        // Matched against the token's `iss`. It is a string identifier, not a URL Kong fetches.
         key = jwtIssuer
         algorithm = "RS256"
         rsa_public_key = identityJwtPublicKey
-        // `secret` is the HS256 shared key, which this credential can never use: its algorithm is RS256,
-        // so Kong verifies with the public key above and nothing else. Kong accepts the credential without
-        // this field — it generates one — but `deck file validate` refuses the file, so the value is
-        // written here, fixed and obviously inert, rather than left to a generator nobody sees.
         secret = "unused-this-credential-verifies-with-rs256"
       }
     }
   }
 }
 
-// Global plugins.
-//
-// Authentication is NOT global, and that is deliberate. It is attached to the identity
-// service's protected route above, so login, registration, refresh and JWKS stay reachable
-// without a token.
-//
 plugins {
   when (!corsOrigins.isEmpty) {
     new {
@@ -355,8 +248,6 @@ plugins {
         origins { for (origin in corsOrigins) { origin } }
         methods { "GET"; "POST"; "PUT"; "PATCH"; "DELETE"; "OPTIONS" }
         headers { "Accept"; "Authorization"; "Content-Type"; "Idempotency-Key"; "X-Request-Id"; "X-Requested-With" }
-        // Tokens travel in the Authorization header, never in a cookie, so no response has to be
-        // readable with credentials. `true` beside `*` was also a pairing browsers reject outright.
         credentials = false
         exposed_headers { "X-Request-Id" }
         max_age = 3600
@@ -371,14 +262,6 @@ plugins {
       echo_downstream = true
     }
   }
-  // Kong was invisible until now: no metrics, no scrape target, so everything it refused before a
-  // service ever saw it — 429, 401 on a missing token, 404 on an unrouted path — existed only in an
-  // access log nothing alerted on. The edge is where the most consequential refusals happen, and a
-  // rate-limited Midtrans notification is the example that matters: money taken, nothing settled,
-  // and no signal anywhere.
-  //
-  // `per_consumer` stays off. This platform has exactly one consumer, identity as the token issuer,
-  // so the label would add cardinality and say nothing.
   new {
     name = "prometheus"
     config {
@@ -395,12 +278,6 @@ plugins {
       minute = 100
       policy = "local"
       fault_tolerant = true
-      // Per client address, not per Kong consumer, which is the default.
-      //
-      // The JWT credential identifies the ISSUER — identity — because it is matched on the
-      // `iss` claim, so every authenticated request maps to the same consumer. Left at the
-      // default they would share one 100/minute bucket, and a single busy client could
-      // rate-limit everybody. Anonymous traffic was already limited per address.
       limit_by = "ip"
     }
   }
