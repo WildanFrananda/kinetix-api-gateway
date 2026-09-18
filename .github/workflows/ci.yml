@@ -52,6 +52,13 @@ jobs:
                      -p jwtIssuer=https://identity.ci.invalid -p corsOrigins="$1" \
                      -f yaml config/gateway.pkl -o "$2"
           }
+          # Same, with the object store's hostname supplied. Kept as a separate function rather
+          # than a fifth argument to render(), so the calls above keep reading as what they are.
+          render_with_storage() {
+            pkl eval -p identityJwtPublicKey="$(cat /tmp/throwaway-public.pem)" \
+                     -p jwtIssuer=https://identity.ci.invalid -p corsOrigins="" \
+                     -p storageHost="$1" -f yaml config/gateway.pkl -o "$2"
+          }
           render "https://app.ci.invalid" kong.yml
           render "" kong-no-cors.yml
           # No browser origins must mean no cors plugin: Kong's cors plugin with no origins answers `*`.
@@ -62,12 +69,32 @@ jobs:
           if render "*,https://app.ci.invalid" /tmp/contradiction.yml 2>/dev/null; then
             echo "'*' combined with another origin was accepted"; exit 1
           fi
-          echo "config renders with origins, without them, and refuses a contradiction"
+          # Object storage is optional and its route is gated on a hostname. Both directions are
+          # asserted because each failure is silent in its own way: a route that never renders is
+          # a feature that quietly does not exist, and one that renders without a host is a Kong
+          # route matching every request that reaches it.
+          render_with_storage "storage.ci.invalid" kong-storage.yml
+          if ! grep -q 'storage.ci.invalid' kong-storage.yml; then
+            echo "a storage host was given and no route was rendered for it"; exit 1
+          fi
+          render_with_storage "" kong-no-storage.yml
+          if grep -q 'name: storage-service' kong-no-storage.yml; then
+            echo "no storage host was given and a storage route was rendered anyway"; exit 1
+          fi
+          # And with the property absent entirely, which is how every caller that does not care
+          # about object storage invokes this — including the two renders above. A required
+          # property for an optional feature makes their business fail, which is exactly how this
+          # job went red on 2026-09-18.
+          pkl eval -p identityJwtPublicKey="$(cat /tmp/throwaway-public.pem)" \
+                   -p jwtIssuer=https://identity.ci.invalid -p corsOrigins="" \
+                   -f yaml config/gateway.pkl -o /tmp/kong-absent.yml
+          echo "config renders with origins, without them, refuses a contradiction, and gates storage on its host"
 
       - name: Kong must accept it
         run: |
           deck file validate kong.yml
           deck file validate kong-no-cors.yml
+          deck file validate kong-storage.yml
 
       # Every upstream has to be a compose service name. A localhost or host.docker.internal
       # address routes to the gateway container itself, which is how a config can look correct

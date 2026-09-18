@@ -4,7 +4,7 @@ hidden jwtIssuer: String(!isEmpty) = read("prop:jwtIssuer")
 
 hidden corsOriginsProp: String = read("prop:corsOrigins")
 
-hidden storageHost: String = read("prop:storageHost")
+hidden storageHost: String = read?("prop:storageHost") ?? ""
 hidden corsOrigins: List<String(this == "*" || matches(Regex(#"https?://[a-z0-9.-]+(:[0-9]+)?"#)))>(!contains("*") || length == 1) =
   corsOriginsProp.split(",").map((origin) -> origin.trim()).filter((origin) -> !origin.isEmpty)
 
