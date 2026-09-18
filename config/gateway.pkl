@@ -3,6 +3,8 @@ hidden identityJwtPublicKey: String = read("prop:identityJwtPublicKey")
 hidden jwtIssuer: String(!isEmpty) = read("prop:jwtIssuer")
 
 hidden corsOriginsProp: String = read("prop:corsOrigins")
+
+hidden storageHost: String = read?("prop:storageHost") ?? ""
 hidden corsOrigins: List<String(this == "*" || matches(Regex(#"https?://[a-z0-9.-]+(:[0-9]+)?"#)))>(!contains("*") || length == 1) =
   corsOriginsProp.split(",").map((origin) -> origin.trim()).filter((origin) -> !origin.isEmpty)
 
@@ -143,6 +145,29 @@ services {
         paths { "/ws/v1/matching/socket" }
         protocols { "http"; "https" }
         strip_path = true
+      }
+    }
+  }
+
+  when (!storageHost.isEmpty) {
+    new {
+      name = "storage-service"
+      url = "http://kinetix-minio:9000"
+      routes {
+        new {
+          name = "storage-route"
+          hosts { storageHost }
+          strip_path = false
+          plugins {
+            new {
+              name = "request-size-limiting"
+              config {
+                allowed_payload_size = 16
+                size_unit = "megabytes"
+              }
+            }
+          }
+        }
       }
     }
   }

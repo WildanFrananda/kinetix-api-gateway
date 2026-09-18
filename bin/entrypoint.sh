@@ -43,6 +43,7 @@ pkl eval \
   -p identityJwtPublicKey="$(cat "$public_key")" \
   -p jwtIssuer="$KINETIX_JWT_ISSUER" \
   -p corsOrigins="$KINETIX_GATEWAY_CORS_ORIGINS" \
+  -p storageHost="${KINETIX_STORAGE_HOST:-}" \
   -f yaml /usr/local/kong/kinetix/gateway.pkl -o "$CONFIG"
 rm -f "$public_key"
 
