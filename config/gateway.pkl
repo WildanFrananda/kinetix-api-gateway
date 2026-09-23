@@ -92,6 +92,21 @@ services {
   }
 
   new {
+    name = "search-service"
+    url = "http://kinetix-search-service:8088"
+    routes {
+      new {
+        name = "search-products-route"
+        paths {
+          "/api/v1/products/search"
+          "/api/v1/products/suggest"
+        }
+        strip_path = false
+      }
+    }
+  }
+
+  new {
     name = "catalog-categories"
     url = "http://kinetix-catalog-service:8000/api/categories"
     routes {

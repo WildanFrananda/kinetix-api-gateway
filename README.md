@@ -23,10 +23,20 @@ The **Kinetix API Gateway** is the single entry point for all external client RE
 | `GET /health` | Internal Static Response | HTTP | Returns JSON 200 OK |
 | `/api/v1/auth/*` | `kinetix-identity-service:5000/api/auth/*` | HTTP REST | `/api/v1/auth` ➔ `/api/auth` |
 | `/api/v1/products` etc. | `kinetix-catalog-service:8000/api/*` | HTTP REST | `/api/v1/*` ➔ `/api/*` |
+| `/api/v1/products/search`, `/api/v1/products/suggest` | `kinetix-search-service:8088` | HTTP REST | none — the paths are the service's own |
 | `/api/v1/warehouse/*` | `kinetix-warehouse-service:3000/api/v1/*` | HTTP REST | `/api/v1/warehouse` ➔ `/api/v1` |
 | `/api/v1/matching/*` | `kinetix-matching-service:4000/api/v1/*` | HTTP REST | `/api/v1/matching` ➔ `/api/v1` |
 | `/ws/v1/matching/socket` | `kinetix-matching-service:4000/socket/websocket` | WebSockets | Forwarded `Upgrade` connection |
 | `/api/v1/matching/telemetry/stream` | `kinetix-matching-service:4000/api/v1/telemetry/stream` | SSE Stream | Non-buffered EventStream |
+
+
+Search sits **under** catalog's prefix deliberately: these are product URLs, and a customer typing
+into a search box should not have to know which service answers. Kong matches plain prefixes
+longest-first, so `/api/v1/products/search` beats `/api/v1/products` — verified against the pinned
+Kong image with both upstreams standing in for themselves, and verified in the other direction too:
+with the search route removed, the same request reaches catalog, which reads it as
+`products/<str:sku>/` with sku `search` and answers 404. Not an error anyone would chase — a search
+box that simply finds nothing.
 
 ---
 
