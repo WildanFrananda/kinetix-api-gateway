@@ -265,6 +265,29 @@ services {
       }
     }
   }
+
+  new {
+    name = "notary-service"
+    url = "http://kinetix-notary-service:8010"
+    routes {
+      new {
+        name = "notary-proofs-route"
+        paths { "/api/v1/proofs" }
+        methods { "GET" }
+        strip_path = false
+        plugins {
+          new {
+            name = "jwt"
+            config {
+              key_claim_name = "iss"
+              claims_to_verify { "exp" }
+              run_on_preflight = false
+            }
+          }
+        }
+      }
+    }
+  }
 }
 
 consumers {
