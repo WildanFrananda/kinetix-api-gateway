@@ -77,6 +77,11 @@ jobs:
           if ! grep -q 'storage.ci.invalid' kong-storage.yml; then
             echo "a storage host was given and no route was rendered for it"; exit 1
           fi
+          # A presigned URL is signed over the Host header the phone sends. Kong replaces it with the
+          # upstream's unless told to keep it, and MinIO then refuses every upload as a bad signature.
+          if ! grep -q 'preserve_host: true' kong-storage.yml; then
+            echo "the storage route does not keep the Host header a presigned URL was signed for"; exit 1
+          fi
           render_with_storage "" kong-no-storage.yml
           if grep -q 'name: storage-service' kong-no-storage.yml; then
             echo "no storage host was given and a storage route was rendered anyway"; exit 1
