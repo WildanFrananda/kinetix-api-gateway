@@ -29,6 +29,7 @@ The **Kinetix API Gateway** is the single entry point for all external client RE
 | `/ws/v1/matching/socket` | `kinetix-matching-service:4000/socket/websocket` | WebSockets | Forwarded `Upgrade` connection |
 | `/api/v1/matching/telemetry/stream` | `kinetix-matching-service:4000/api/v1/telemetry/stream` | SSE Stream | Non-buffered EventStream |
 | `GET /api/v1/proofs/liabilities/{epoch\|latest}` | `kinetix-notary-service:8010` | HTTP REST (JWT) | none — an account holder's own proofs of liabilities |
+| `POST /api/v1/proofs/registrations` | `kinetix-notary-service:8010` | HTTP REST (JWT) | none — registers the address an account holder will request statements from |
 
 
 Search sits **under** catalog's prefix deliberately: these are product URLs, and a customer typing
