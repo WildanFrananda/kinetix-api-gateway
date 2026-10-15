@@ -153,12 +153,25 @@ services {
   }
 
   new {
-    name = "matching-websocket"
-    url = "http://kinetix-matching-service:4000/socket/websocket"
+    name = "matching-driver-socket"
+    url = "http://kinetix-matching-service:4000/driver/websocket"
     routes {
       new {
-        name = "matching-websocket-route"
-        paths { "/ws/v1/matching/socket" }
+        name = "matching-driver-socket-route"
+        paths { "/ws/v1/matching/driver" }
+        protocols { "http"; "https" }
+        strip_path = true
+      }
+    }
+  }
+
+  new {
+    name = "matching-merchant-socket"
+    url = "http://kinetix-matching-service:4000/merchant/websocket"
+    routes {
+      new {
+        name = "matching-merchant-socket-route"
+        paths { "/ws/v1/matching/merchant" }
         protocols { "http"; "https" }
         strip_path = true
       }

@@ -26,8 +26,8 @@ The **Kinetix API Gateway** is the single entry point for all external client RE
 | `/api/v1/products/search`, `/api/v1/products/suggest` | `kinetix-search-service:8088` | HTTP REST | none — the paths are the service's own |
 | `/api/v1/warehouse/*` | `kinetix-warehouse-service:3000/api/v1/*` | HTTP REST | `/api/v1/warehouse` ➔ `/api/v1` |
 | `/api/v1/matching/*` | `kinetix-matching-service:4000/api/v1/*` | HTTP REST | `/api/v1/matching` ➔ `/api/v1` |
-| `/ws/v1/matching/socket` | `kinetix-matching-service:4000/socket/websocket` | WebSockets | Forwarded `Upgrade` connection |
-| `/api/v1/matching/telemetry/stream` | `kinetix-matching-service:4000/api/v1/telemetry/stream` | SSE Stream | Non-buffered EventStream |
+| `/ws/v1/matching/driver` | `kinetix-matching-service:4000/driver/websocket` | WebSockets | Forwarded `Upgrade`; matching checks the access token and the courier role |
+| `/ws/v1/matching/merchant` | `kinetix-matching-service:4000/merchant/websocket` | WebSockets | Forwarded `Upgrade`; matching checks the access token and the seller role |
 | `GET /api/v1/proofs/liabilities/{epoch\|latest}` | `kinetix-notary-service:8010` | HTTP REST (JWT) | none — an account holder's own proofs of liabilities |
 | `POST /api/v1/proofs/registrations` | `kinetix-notary-service:8010` | HTTP REST (JWT) | none — registers the address an account holder will request statements from |
 | `POST`/`DELETE /api/v1/notifications/devices` | `kinetix-notification-service:8004` | HTTP REST (JWT) | none — registers or forgets the caller's own handset for push; the principal is the token's `sub` |
