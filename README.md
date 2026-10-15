@@ -30,6 +30,7 @@ The **Kinetix API Gateway** is the single entry point for all external client RE
 | `/api/v1/matching/telemetry/stream` | `kinetix-matching-service:4000/api/v1/telemetry/stream` | SSE Stream | Non-buffered EventStream |
 | `GET /api/v1/proofs/liabilities/{epoch\|latest}` | `kinetix-notary-service:8010` | HTTP REST (JWT) | none — an account holder's own proofs of liabilities |
 | `POST /api/v1/proofs/registrations` | `kinetix-notary-service:8010` | HTTP REST (JWT) | none — registers the address an account holder will request statements from |
+| `POST`/`DELETE /api/v1/notifications/devices` | `kinetix-notification-service:8004` | HTTP REST (JWT) | none — registers or forgets the caller's own handset for push; the principal is the token's `sub` |
 
 
 Search sits **under** catalog's prefix deliberately: these are product URLs, and a customer typing
