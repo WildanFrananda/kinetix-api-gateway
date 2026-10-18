@@ -181,7 +181,7 @@ services {
   when (!storageHost.isEmpty) {
     new {
       name = "storage-service"
-      url = "http://kinetix-minio:9000"
+      url = "http://kinetix-object-store:9000"
       routes {
         new {
           name = "storage-route"
