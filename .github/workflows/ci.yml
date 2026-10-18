@@ -78,7 +78,7 @@ jobs:
             echo "a storage host was given and no route was rendered for it"; exit 1
           fi
           # A presigned URL is signed over the Host header the phone sends. Kong replaces it with the
-          # upstream's unless told to keep it, and MinIO then refuses every upload as a bad signature.
+          # upstream's unless told to keep it, and the object store then refuses every upload as a bad signature.
           if ! grep -q 'preserve_host: true' kong-storage.yml; then
             echo "the storage route does not keep the Host header a presigned URL was signed for"; exit 1
           fi
