@@ -40,6 +40,7 @@ FROM kong:3.9@sha256:2a8cf3b110cdaba1cb00adc665b8635ed1fc75c907f7a4298613c68e497
 USER root
 COPY --from=pkl-builder /usr/local/bin/pkl /usr/local/bin/pkl
 COPY config/gateway.pkl /usr/local/kong/kinetix/gateway.pkl
+COPY config/access_log.conf /usr/local/kong/kinetix/access_log.conf
 COPY bin/entrypoint.sh /usr/local/bin/kinetix-entrypoint.sh
 RUN mkdir -p /usr/local/kong/declarative \
     && chown kong:kong /usr/local/kong/declarative \
@@ -51,6 +52,8 @@ CMD ["kong", "docker-start"]
 
 ENV KONG_DATABASE=off
 ENV KONG_DECLARATIVE_CONFIG=/usr/local/kong/declarative/kong.yml
+ENV KONG_NGINX_HTTP_INCLUDE=/usr/local/kong/kinetix/access_log.conf
+ENV KONG_PROXY_ACCESS_LOG="logs/access.log kinetix"
 
 # TLS only. There is deliberately no plaintext listener beside it: an 8080 that still answers is
 # an 8080 that clients keep using, and every token this gateway now verifies would travel in
