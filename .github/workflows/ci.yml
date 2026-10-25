@@ -14,7 +14,7 @@ jobs:
   config-valid:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install pkl
         run: |
@@ -192,7 +192,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: config-valid
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: A .dockerignore must exist
         run: test -f .dockerignore || { echo "no .dockerignore — the context would carry .env and .git"; exit 1; }
