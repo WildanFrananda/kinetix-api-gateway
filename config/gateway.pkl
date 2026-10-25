@@ -1,3 +1,8 @@
+hidden ipv4Octet: String = #"(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])"#
+hidden ipv4Range: String = #"\#(ipv4Octet)(\.\#(ipv4Octet)){3}(/(3[0-2]|[12][0-9]|[1-9]))?"#
+hidden ipv6Range: String = #"[0-9a-f:]*:[0-9a-f:.]*(/(12[0-8]|1[01][0-9]|[1-9][0-9]|[1-9]))?"#
+hidden hostPattern: String = #"[a-z0-9.-]+(:[0-9]+)?"#
+
 hidden identityJwtPublicKey: String = read("prop:identityJwtPublicKey")
 
 hidden jwtIssuer: String(!isEmpty) = read("prop:jwtIssuer")
@@ -8,6 +13,136 @@ hidden storageHost: String = read?("prop:storageHost") ?? ""
 hidden corsOrigins: List<String(this == "*" || matches(Regex(#"https?://[a-z0-9.-]+(:[0-9]+)?"#)))>(!contains("*") || length == 1) =
   corsOriginsProp.split(",").map((origin) -> origin.trim()).filter((origin) -> !origin.isEmpty)
 
+hidden staffRangesProp: String = read("prop:staffRanges")
+hidden staffRanges: List<String(matches(Regex("\(ipv4Range)|\(ipv6Range)")))>(!isEmpty) =
+  staffRangesProp.split(",").map((range) -> range.trim()).filter((range) -> !range.isEmpty)
+
+hidden publicApiHost: String(matches(Regex(hostPattern))) = read("prop:publicApiHost")
+
+hidden backofficeHostProp: String(matches(Regex(hostPattern)), !endsWith(":443")) = read("prop:backofficeHost")
+hidden sellerHostProp: String(matches(Regex(hostPattern)), !endsWith(":443")) = read("prop:sellerHost")
+
+hidden internalHost: String = "kinetix-api-gateway"
+hidden internalPort: Int = 8000
+
+hidden hostNames: List<String> = List(publicApiHost, storageHost, backofficeHostProp, sellerHostProp, internalHost)
+  .filter((host) -> !host.isEmpty)
+  .map((host) -> host.split(":").first)
+
+function distinctHost(host: String): String =
+  if (hostNames.isDistinct) host
+  else throw("the public API, storage, backoffice, seller and internal hosts must all differ: \(hostNames.join(", "))")
+
+hidden backofficeHost: String = distinctHost(backofficeHostProp).split(":").first
+hidden sellerHost: String = distinctHost(sellerHostProp).split(":").first
+
+hidden securityTxt: String = List(
+  "Contact: https://github.com/WildanFrananda/kinetix-docs/security/advisories/new",
+  "Expires: 2027-10-21T00:00:00.000Z",
+  "Preferred-Languages: en, id",
+  "Canonical: https://\(publicApiHost)/.well-known/security.txt",
+  "Policy: https://docs.wildanfrananda.my.id/reference/report-a-vulnerability/",
+  ""
+).join("\n")
+
+hidden jwtPlugin: Dynamic = new {
+  name = "jwt"
+  config {
+    key_claim_name = "iss"
+    claims_to_verify { "exp" }
+    run_on_preflight = false
+  }
+}
+
+hidden staffGate: Dynamic = new {
+  name = "ip-restriction"
+  config {
+    allow { for (range in staffRanges) { range } }
+    status = 403
+    message = "This route is not available from your network"
+  }
+}
+
+hidden perAddressLimit: Dynamic = new {
+  name = "rate-limiting"
+  config {
+    minute = 100
+    policy = "local"
+    fault_tolerant = true
+    limit_by = "ip"
+  }
+}
+
+hidden browserCors: Dynamic = new {
+  name = "cors"
+  config {
+    origins { for (origin in corsOrigins) { origin } }
+    methods { "GET"; "POST"; "PUT"; "PATCH"; "DELETE"; "OPTIONS" }
+    headers {
+      "Accept"
+      "Authorization"
+      "Content-Type"
+      "Idempotency-Key"
+      "X-Request-Id"
+      "X-Requested-With"
+      "X-Kinetix-Client"
+      "X-Firebase-AppCheck"
+    }
+    credentials = false
+    exposed_headers { "X-Request-Id"; "Allow"; "Idempotent-Replayed"; "Location"; "Retry-After" }
+    max_age = 3600
+  }
+}
+
+hidden internalListenerOnly: Dynamic = new {
+  name = "pre-function"
+  config {
+    access {
+      "if kong.request.get_scheme() ~= \"http\" or kong.request.get_port() ~= \(internalPort) then return kong.response.error(421, \"Misdirected Request\") end ngx.var.upstream_x_forwarded_proto = \"https\""
+    }
+  }
+}
+
+function pluginsOf(route: Dynamic): List =
+  if (route.hasProperty("plugins")) route.plugins.toList() else List()
+
+function onPublicListener(route: Dynamic, withCors: Boolean): Dynamic = (route) {
+  protocols = List("https")
+  plugins {
+    when (withCors && !corsOrigins.isEmpty) { browserCors }
+    when (!pluginsOf(route).any((plugin) -> plugin.name == "rate-limiting")) { perAddressLimit }
+  }
+}
+
+function onInternalListener(route: Dynamic): Dynamic = new {
+  name = "\(route.name)-internal"
+  hosts { internalHost }
+  paths = route.paths
+  when (route.hasProperty("methods")) { methods = route.methods }
+  protocols = List("http")
+  strip_path = route.strip_path
+  plugins {
+    internalListenerOnly
+    for (plugin in pluginsOf(route)) {
+      when (plugin.name != "ip-restriction" && plugin.name != "rate-limiting") { plugin }
+    }
+  }
+}
+
+function api(route: Dynamic): List<Dynamic> = List(onPublicListener(route, true), onInternalListener(route))
+
+function publicOnly(route: Dynamic): Dynamic = onPublicListener(route, true)
+
+function browserApp(route: Dynamic): Dynamic = onPublicListener(route, false)
+
+hidden unroutedOnBrowserAppHost: Dynamic = new {
+  name = "request-termination"
+  config {
+    status_code = 404
+    message = "Not found"
+  }
+}
+
 _format_version = "3.0"
 _transform = true
 
@@ -16,7 +151,7 @@ services {
     name = "health-service"
     url = "http://127.0.0.1:8443/health"
     routes {
-      new {
+      publicOnly(new Dynamic {
         name = "health-route"
         paths { "/health" }
         strip_path = false
@@ -26,11 +161,66 @@ services {
             config {
               status_code = 200
               content_type = "application/json"
-              body = "{\"status\":\"ok\",\"gateway\":\"kinetix-api-gateway\",\"engine\":\"Kong/DB-less (Apple Pkl)\"}"
+              body = "{\"status\":\"ok\"}"
             }
           }
         }
-      }
+      })
+
+      publicOnly(new Dynamic {
+        name = "security-txt-route"
+        paths { "/.well-known/security.txt" }
+        strip_path = false
+        plugins {
+          new {
+            name = "request-termination"
+            config {
+              status_code = 200
+              content_type = "text/plain; charset=utf-8"
+              body = securityTxt
+            }
+          }
+        }
+      })
+    }
+  }
+
+  new {
+    name = "edge-service"
+    url = "http://kinetix-edge-service:8080"
+    routes {
+      browserApp(new Dynamic {
+        name = "edge-backoffice-route"
+        hosts { backofficeHost }
+        paths { "/bff/" }
+        strip_path = false
+        preserve_host = true
+        plugins { staffGate }
+      })
+
+      browserApp(new Dynamic {
+        name = "edge-seller-route"
+        hosts { sellerHost }
+        paths { "/bff/" }
+        strip_path = false
+        preserve_host = true
+      })
+
+      browserApp(new Dynamic {
+        name = "backoffice-unrouted-route"
+        hosts { backofficeHost }
+        paths { "/" }
+        strip_path = false
+        plugins { unroutedOnBrowserAppHost }
+      })
+
+      browserApp(new Dynamic {
+        name = "seller-unrouted-route"
+        hosts { sellerHost }
+        paths { "/" }
+        strip_path = false
+        plugins { unroutedOnBrowserAppHost }
+      })
     }
   }
 
@@ -38,7 +228,7 @@ services {
     name = "identity-service"
     url = "http://kinetix-identity-service:5000"
     routes {
-      new {
+      ...api(new Dynamic {
         name = "identity-public-route"
         paths {
           "/api/v1/auth/login"
@@ -48,15 +238,15 @@ services {
           "/api/v1/couriers/register"
         }
         strip_path = false
-      }
+      })
 
-      new {
+      ...api(new Dynamic {
         name = "identity-jwks-route"
         paths { "/.well-known/jwks.json" }
         strip_path = false
-      }
+      })
 
-      new {
+      ...api(new Dynamic {
         name = "identity-protected-route"
         paths {
           "/api/v1/auth"
@@ -65,17 +255,23 @@ services {
           "/api/v1/couriers"
         }
         strip_path = false
-        plugins {
-          new {
-            name = "jwt"
-            config {
-              key_claim_name = "iss"
-              claims_to_verify { "exp" }
-              run_on_preflight = false
-            }
-          }
+        plugins { jwtPlugin }
+      })
+
+      ...api(new Dynamic {
+        name = "identity-staff-route"
+        paths {
+          "/api/v1/sellers/applications"
+          "/api/v1/couriers/applications"
+          "~/api/v1/sellers/[^/]+/(verify|reject)"
+          "~/api/v1/couriers/[^/]+/approve"
         }
-      }
+        strip_path = false
+        plugins {
+          jwtPlugin
+          staffGate
+        }
+      })
     }
   }
 
@@ -83,11 +279,11 @@ services {
     name = "catalog-products"
     url = "http://kinetix-catalog-service:8000/api/products"
     routes {
-      new {
+      ...api(new Dynamic {
         name = "catalog-products-route"
         paths { "/api/v1/products" }
         strip_path = true
-      }
+      })
     }
   }
 
@@ -95,14 +291,14 @@ services {
     name = "search-service"
     url = "http://kinetix-search-service:8088"
     routes {
-      new {
+      ...api(new Dynamic {
         name = "search-products-route"
         paths {
           "/api/v1/products/search"
           "/api/v1/products/suggest"
         }
         strip_path = false
-      }
+      })
     }
   }
 
@@ -110,11 +306,19 @@ services {
     name = "catalog-categories"
     url = "http://kinetix-catalog-service:8000/api/categories"
     routes {
-      new {
+      ...api(new Dynamic {
         name = "catalog-categories-route"
         paths { "/api/v1/categories" }
         strip_path = true
-      }
+      })
+
+      ...api(new Dynamic {
+        name = "catalog-categories-staff-route"
+        paths { "/api/v1/categories" }
+        methods { "POST"; "PUT"; "PATCH"; "DELETE" }
+        strip_path = true
+        plugins { staffGate }
+      })
     }
   }
 
@@ -122,11 +326,50 @@ services {
     name = "warehouse-service"
     url = "http://kinetix-warehouse-service:3000/api/v1"
     routes {
-      new {
+      ...api(new Dynamic {
         name = "warehouse-route"
         paths { "/api/v1/warehouse" }
         strip_path = true
-      }
+      })
+    }
+  }
+
+  new {
+    name = "warehouse-bins"
+    url = "http://kinetix-warehouse-service:3000/api/v1/bins"
+    routes {
+      ...api(new Dynamic {
+        name = "warehouse-bins-staff-route"
+        paths { "/api/v1/warehouse/bins" }
+        strip_path = true
+        plugins { staffGate }
+      })
+    }
+  }
+
+  new {
+    name = "warehouse-stock-receipts"
+    url = "http://kinetix-warehouse-service:3000/api/v1/stock_receipts"
+    routes {
+      ...api(new Dynamic {
+        name = "warehouse-stock-receipts-staff-route"
+        paths { "/api/v1/warehouse/stock_receipts" }
+        strip_path = true
+        plugins { staffGate }
+      })
+    }
+  }
+
+  new {
+    name = "warehouse-stock-adjustments"
+    url = "http://kinetix-warehouse-service:3000/api/v1/stock_adjustments"
+    routes {
+      ...api(new Dynamic {
+        name = "warehouse-stock-adjustments-staff-route"
+        paths { "/api/v1/warehouse/stock_adjustments" }
+        strip_path = true
+        plugins { staffGate }
+      })
     }
   }
 
@@ -134,21 +377,44 @@ services {
     name = "matching-service"
     url = "http://kinetix-matching-service:4000/api/v1"
     routes {
-      new {
+      ...api(new Dynamic {
         name = "matching-route"
         paths { "/api/v1/matching" }
         strip_path = true
+        plugins { jwtPlugin }
+      })
+    }
+  }
+
+  new {
+    name = "matching-drivers"
+    url = "http://kinetix-matching-service:4000/api/v1/drivers"
+    routes {
+      ...api(new Dynamic {
+        name = "matching-drivers-staff-route"
+        paths { "/api/v1/matching/drivers" }
+        strip_path = true
         plugins {
-          new {
-            name = "jwt"
-            config {
-              key_claim_name = "iss"
-              claims_to_verify { "exp" }
-              run_on_preflight = false
-            }
-          }
+          jwtPlugin
+          staffGate
         }
-      }
+      })
+    }
+  }
+
+  new {
+    name = "matching-backoffice"
+    url = "http://kinetix-matching-service:4000/api/v1/backoffice"
+    routes {
+      ...api(new Dynamic {
+        name = "matching-backoffice-staff-route"
+        paths { "/api/v1/matching/backoffice" }
+        strip_path = true
+        plugins {
+          jwtPlugin
+          staffGate
+        }
+      })
     }
   }
 
@@ -156,12 +422,14 @@ services {
     name = "matching-driver-socket"
     url = "http://kinetix-matching-service:4000/driver/websocket"
     routes {
-      new {
+      publicOnly(new Dynamic {
         name = "matching-driver-socket-route"
-        paths { "/ws/v1/matching/driver" }
-        protocols { "http"; "https" }
+        paths {
+          "/ws/v1/matching/driver"
+          "/ws/v1/matching/driver/websocket"
+        }
         strip_path = true
-      }
+      })
     }
   }
 
@@ -169,12 +437,14 @@ services {
     name = "matching-merchant-socket"
     url = "http://kinetix-matching-service:4000/merchant/websocket"
     routes {
-      new {
+      publicOnly(new Dynamic {
         name = "matching-merchant-socket-route"
-        paths { "/ws/v1/matching/merchant" }
-        protocols { "http"; "https" }
+        paths {
+          "/ws/v1/matching/merchant"
+          "/ws/v1/matching/merchant/websocket"
+        }
         strip_path = true
-      }
+      })
     }
   }
 
@@ -183,9 +453,9 @@ services {
       name = "storage-service"
       url = "http://kinetix-object-store:9000"
       routes {
-        new {
+        publicOnly(new Dynamic {
           name = "storage-route"
-          hosts { storageHost }
+          hosts { distinctHost(storageHost) }
           strip_path = false
           preserve_host = true
           plugins {
@@ -197,7 +467,7 @@ services {
               }
             }
           }
-        }
+        })
       }
     }
   }
@@ -206,11 +476,11 @@ services {
     name = "pricing-service"
     url = "http://kinetix-pricing-service:6000/api/v1"
     routes {
-      new {
+      ...api(new Dynamic {
         name = "pricing-route"
         paths { "/api/v1/pricing" }
         strip_path = true
-      }
+      })
     }
   }
 
@@ -218,14 +488,26 @@ services {
     name = "order-service"
     url = "http://kinetix-order-service:8001"
     routes {
-      new {
+      ...api(new Dynamic {
         name = "order-route"
         paths {
           "/api/v1/cart"
           "/api/v1/orders"
         }
         strip_path = false
-      }
+      })
+
+      ...api(new Dynamic {
+        name = "order-staff-route"
+        paths {
+          "~/api/v1/orders/(?i)sagas"
+          "~/api/v1/orders/(?i)returns/needs-attention"
+          "~/api/v1/orders/(?i)returns/[^/]+/reject"
+          "~/api/v1/orders/[^/]+/(?i)complete"
+        }
+        strip_path = false
+        plugins { staffGate }
+      })
     }
   }
 
@@ -233,11 +515,11 @@ services {
     name = "review-service"
     url = "http://kinetix-review-service:8002"
     routes {
-      new {
+      ...api(new Dynamic {
         name = "review-route"
         paths { "/api/v1/reviews" }
         strip_path = false
-      }
+      })
     }
   }
 
@@ -245,7 +527,7 @@ services {
     name = "payment-service"
     url = "http://kinetix-payment-service:8003"
     routes {
-      new {
+      ...api(new Dynamic {
         name = "payment-midtrans-notifications"
         paths { "~/api/v1/payment/gateway/midtrans/notifications$" }
         methods { "POST" }
@@ -261,22 +543,14 @@ services {
             }
           }
         }
-      }
-      new {
+      })
+
+      ...api(new Dynamic {
         name = "payment-route"
         paths { "/api/v1/payment" }
         strip_path = false
-        plugins {
-          new {
-            name = "jwt"
-            config {
-              key_claim_name = "iss"
-              claims_to_verify { "exp" }
-              run_on_preflight = false
-            }
-          }
-        }
-      }
+        plugins { jwtPlugin }
+      })
     }
   }
 
@@ -284,38 +558,21 @@ services {
     name = "notary-service"
     url = "http://kinetix-notary-service:8010"
     routes {
-      new {
+      ...api(new Dynamic {
         name = "notary-proofs-route"
         paths { "/api/v1/proofs" }
         methods { "GET"; "OPTIONS" }
         strip_path = false
-        plugins {
-          new {
-            name = "jwt"
-            config {
-              key_claim_name = "iss"
-              claims_to_verify { "exp" }
-              run_on_preflight = false
-            }
-          }
-        }
-      }
-      new {
+        plugins { jwtPlugin }
+      })
+
+      ...api(new Dynamic {
         name = "notary-registrations-route"
         paths { "/api/v1/proofs/registrations" }
         methods { "GET"; "POST"; "OPTIONS" }
         strip_path = false
-        plugins {
-          new {
-            name = "jwt"
-            config {
-              key_claim_name = "iss"
-              claims_to_verify { "exp" }
-              run_on_preflight = false
-            }
-          }
-        }
-      }
+        plugins { jwtPlugin }
+      })
     }
   }
 
@@ -323,22 +580,13 @@ services {
     name = "notification-service"
     url = "http://kinetix-notification-service:8004"
     routes {
-      new {
+      ...api(new Dynamic {
         name = "notification-devices-route"
         paths { "/api/v1/notifications/devices" }
         methods { "POST"; "DELETE"; "OPTIONS" }
         strip_path = false
-        plugins {
-          new {
-            name = "jwt"
-            config {
-              key_claim_name = "iss"
-              claims_to_verify { "exp" }
-              run_on_preflight = false
-            }
-          }
-        }
-      }
+        plugins { jwtPlugin }
+      })
     }
   }
 }
@@ -358,19 +606,6 @@ consumers {
 }
 
 plugins {
-  when (!corsOrigins.isEmpty) {
-    new {
-      name = "cors"
-      config {
-        origins { for (origin in corsOrigins) { origin } }
-        methods { "GET"; "POST"; "PUT"; "PATCH"; "DELETE"; "OPTIONS" }
-        headers { "Accept"; "Authorization"; "Content-Type"; "Idempotency-Key"; "X-Request-Id"; "X-Requested-With" }
-        credentials = false
-        exposed_headers { "X-Request-Id"; "Allow"; "Idempotent-Replayed"; "Location"; "Retry-After" }
-        max_age = 3600
-      }
-    }
-  }
   new {
     name = "correlation-id"
     config {
@@ -387,15 +622,6 @@ plugins {
       bandwidth_metrics = false
       upstream_health_metrics = true
       per_consumer = false
-    }
-  }
-  new {
-    name = "rate-limiting"
-    config {
-      minute = 100
-      policy = "local"
-      fault_tolerant = true
-      limit_by = "ip"
     }
   }
 }

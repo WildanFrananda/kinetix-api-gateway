@@ -1,0 +1,13 @@
+_format_version: "3.0"
+services:
+  - name: echo
+    url: http://127.0.0.1:9
+    routes:
+      - name: echo
+        paths:
+          - /
+        plugins:
+          - name: request-termination
+            config:
+              status_code: 200
+              echo: true

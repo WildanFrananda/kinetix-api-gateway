@@ -23,11 +23,36 @@ RUN set -eu; \
     pkl eval -p identityJwtPublicKey="$(cat /tmp/throwaway-public.pem)" \
              -p jwtIssuer=https://identity.build.invalid \
              -p corsOrigins= \
+             -p staffRanges=192.0.2.0/24 \
+             -p publicApiHost=api.build.invalid \
+             -p backofficeHost=backoffice.build.invalid \
+             -p sellerHost=seller.build.invalid \
              -f yaml gateway.pkl -o /tmp/kong.yml; \
     if ! grep -q "rsa_public_key" /tmp/kong.yml; then \
       echo "the rendered config carries no verification key"; exit 1; \
     fi; \
-    rm -f /tmp/throwaway.pem /tmp/throwaway-public.pem /tmp/kong.yml
+    if ! grep -q "name: ip-restriction" /tmp/kong.yml; then \
+      echo "the rendered config carries no staff gate"; exit 1; \
+    fi; \
+    twins="$(grep -c -- '-internal$' /tmp/kong.yml)"; \
+    guards="$(grep -c 'name: pre-function' /tmp/kong.yml)"; \
+    if [ "$twins" -eq 0 ] || [ "$twins" != "$guards" ]; then \
+      echo "$twins internal twins and $guards plaintext guards"; exit 1; \
+    fi; \
+    refuses() { \
+      if pkl eval -p identityJwtPublicKey="$(cat /tmp/throwaway-public.pem)" \
+                  -p jwtIssuer=https://identity.build.invalid \
+                  -p corsOrigins= \
+                  -p publicApiHost=api.build.invalid \
+                  "$@" \
+                  -f yaml gateway.pkl -o /tmp/kong-without.yml 2>/dev/null; then \
+        echo "the config rendered with only $*"; exit 1; \
+      fi; \
+    }; \
+    refuses -p backofficeHost=backoffice.build.invalid -p sellerHost=seller.build.invalid; \
+    refuses -p staffRanges=192.0.2.0/24 -p sellerHost=seller.build.invalid; \
+    refuses -p staffRanges=192.0.2.0/24 -p backofficeHost=backoffice.build.invalid; \
+    rm -f /tmp/throwaway.pem /tmp/throwaway-public.pem /tmp/kong.yml /tmp/kong-without.yml
 
 # Pin the Kong minor rather than `latest`: the gateway is the platform's only published
 # surface, and `latest` means a rebuild can change what terminates every request without a
@@ -55,15 +80,9 @@ ENV KONG_DECLARATIVE_CONFIG=/usr/local/kong/declarative/kong.yml
 ENV KONG_NGINX_HTTP_INCLUDE=/usr/local/kong/kinetix/access_log.conf
 ENV KONG_PROXY_ACCESS_LOG="logs/access.log kinetix"
 
-# TLS only. There is deliberately no plaintext listener beside it: an 8080 that still answers is
-# an 8080 that clients keep using, and every token this gateway now verifies would travel in
-# clear text on the way to being verified. The previous 8443 listener was declared with no
-# certificate and served Kong's throwaway self-signed default, which no client could verify —
-# that is not the same as having TLS.
-#
 # The certificate and key are placed by bin/entrypoint.sh from files or from the environment; they
 # are not in this image.
-ENV KONG_PROXY_LISTEN="0.0.0.0:8443 ssl"
+ENV KONG_PROXY_LISTEN="0.0.0.0:8443 ssl, 0.0.0.0:8000"
 
 EXPOSE 8443
 

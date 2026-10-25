@@ -28,7 +28,7 @@ config-valid:
   stage: verify
   image: debian:bookworm-slim
   before_script:
-    - apt-get update -qq && apt-get install -y -qq --no-install-recommends curl ca-certificates openssl
+    - apt-get update -qq && apt-get install -y -qq --no-install-recommends curl ca-certificates openssl jq
     - |
       case "$(uname -m)" in
         aarch64|arm64) PKL_ARCH=linux-aarch64; DECK_ARCH=linux_arm64 ;;
@@ -63,6 +63,8 @@ config-valid:
       render() {
         pkl eval -p identityJwtPublicKey="$(cat /tmp/throwaway-public.pem)" \
                  -p jwtIssuer=https://identity.ci.invalid -p corsOrigins="$1" \
+                 -p staffRanges=192.0.2.0/24 -p publicApiHost=api.ci.invalid \
+                 -p backofficeHost=backoffice.ci.invalid:8443 -p sellerHost=seller.ci.invalid \
                  -f yaml config/gateway.pkl -o "$2"
       }
       render "https://app.ci.invalid" kong.yml
@@ -76,8 +78,67 @@ config-valid:
         echo "'*' combined with another origin was accepted"; exit 1
       fi
       echo "config renders with origins, without them, and refuses a contradiction"
+    - |
+      gate() {
+        pkl eval -p identityJwtPublicKey="$(cat /tmp/throwaway-public.pem)" \
+                 -p jwtIssuer=https://identity.ci.invalid -p corsOrigins= \
+                 -p publicApiHost=api.ci.invalid -p backofficeHost=backoffice.ci.invalid:8443 \
+                 -p sellerHost=seller.ci.invalid "$@" \
+                 -f yaml config/gateway.pkl -o /tmp/kong-gate.yml 2>/dev/null
+      }
+      if gate; then
+        echo "the config rendered without a staff range"; exit 1
+      fi
+      for range in "" "0.0.0.0/0" "::/0" "not-an-address"; do
+        if gate -p staffRanges="$range"; then
+          echo "the staff range '$range' was accepted"; exit 1
+        fi
+      done
+      gates="$(grep -c 'name: ip-restriction' kong.yml)"
+      if [ "$gates" != 9 ]; then
+        echo "expected the staff gate on 9 routes, found $gates"; exit 1
+      fi
+      if ! grep -qF "body: '{\"status\":\"ok\"}'" kong.yml; then
+        echo "/health answers more than its status"; exit 1
+      fi
+      if ! grep -qF 'Canonical: https://api.ci.invalid/.well-known/security.txt' kong.yml; then
+        echo "security.txt does not name the host it is served from"; exit 1
+      fi
+      echo "the staff gate needs a range, refuses an everyone range and covers 9 routes; /health and security.txt are as published"
+    - |
+      hosts() {
+        pkl eval -p identityJwtPublicKey="$(cat /tmp/throwaway-public.pem)" \
+                 -p jwtIssuer=https://identity.ci.invalid -p corsOrigins= \
+                 -p staffRanges=192.0.2.0/24 -p publicApiHost=api.ci.invalid "$@" \
+                 -f yaml config/gateway.pkl -o /tmp/kong-hosts.yml 2>/dev/null
+      }
+      if hosts -p sellerHost=seller.ci.invalid; then
+        echo "the config rendered without a backoffice host"; exit 1
+      fi
+      if hosts -p backofficeHost=backoffice.ci.invalid; then
+        echo "the config rendered without a seller host"; exit 1
+      fi
+      for pair in "api.ci.invalid:8443 seller.ci.invalid" "backoffice.ci.invalid seller.ci.invalid:443" \
+                  "backoffice.ci.invalid backoffice.ci.invalid" "kinetix-api-gateway seller.ci.invalid"; do
+        set -- $pair
+        if hosts -p backofficeHost="$1" -p sellerHost="$2"; then
+          echo "the browser-app hosts '$1' and '$2' were accepted"; exit 1
+        fi
+      done
+      pkl eval -p identityJwtPublicKey="$(cat /tmp/throwaway-public.pem)" \
+               -p jwtIssuer=https://identity.ci.invalid -p corsOrigins="https://app.ci.invalid" \
+               -p staffRanges=192.0.2.0/24 -p publicApiHost=api.ci.invalid \
+               -p backofficeHost=backoffice.ci.invalid:8443 -p sellerHost=seller.ci.invalid \
+               -p storageHost=storage.ci.invalid -f json config/gateway.pkl -o /tmp/kong.json
+      broken="$(jq -r --arg backoffice backoffice.ci.invalid --arg seller seller.ci.invalid \
+                     -f test/config_invariants.jq /tmp/kong.json)"
+      if [ -n "$broken" ]; then
+        printf '%s\n' "$broken"; exit 1
+      fi
+      echo "/bff/ on the two browser-app hosts goes to the edge and nothing else does; every API route has its plaintext twin"
     - deck file validate kong.yml
     - deck file validate kong-no-cors.yml
+    - deck file validate /tmp/kong.json
     # Every upstream must be a compose service name, never localhost or a host-network escape.
     # 8443: the health route's own upstream. This said 8080 after the plaintext listener was removed,
     # which made the exemption match nothing — the paired GitHub file had already moved to 8443.
