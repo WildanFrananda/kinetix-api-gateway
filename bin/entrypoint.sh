@@ -28,6 +28,22 @@ if [ -z "${KINETIX_GATEWAY_CORS_ORIGINS+set}" ]; then
   echo "KINETIX_GATEWAY_CORS_ORIGINS must be set. Empty is allowed, and means no browser origin is trusted." >&2
   exit 1
 fi
+if [ -z "${KINETIX_GATEWAY_STAFF_RANGES:-}" ]; then
+  echo "KINETIX_GATEWAY_STAFF_RANGES is required: the CIDRs the admin-only routes accept. There is no default." >&2
+  exit 1
+fi
+if [ -z "${KINETIX_PUBLIC_API_HOST:-}" ]; then
+  echo "KINETIX_PUBLIC_API_HOST is required: the host this gateway serves, which security.txt names." >&2
+  exit 1
+fi
+if [ -z "${KINETIX_BACKOFFICE_HOST:-}" ]; then
+  echo "KINETIX_BACKOFFICE_HOST is required: the backoffice's host, whose /bff/ goes to the edge." >&2
+  exit 1
+fi
+if [ -z "${KINETIX_SELLER_HOST:-}" ]; then
+  echo "KINETIX_SELLER_HOST is required: the seller web app's host, whose /bff/ goes to the edge." >&2
+  exit 1
+fi
 
 CONFIG="${KONG_DECLARATIVE_CONFIG:-/usr/local/kong/declarative/kong.yml}"
 umask 077
@@ -44,6 +60,10 @@ pkl eval \
   -p jwtIssuer="$KINETIX_JWT_ISSUER" \
   -p corsOrigins="$KINETIX_GATEWAY_CORS_ORIGINS" \
   -p storageHost="${KINETIX_STORAGE_HOST:-}" \
+  -p staffRanges="$KINETIX_GATEWAY_STAFF_RANGES" \
+  -p publicApiHost="$KINETIX_PUBLIC_API_HOST" \
+  -p backofficeHost="$KINETIX_BACKOFFICE_HOST" \
+  -p sellerHost="$KINETIX_SELLER_HOST" \
   -f yaml /usr/local/kong/kinetix/gateway.pkl -o "$CONFIG"
 rm -f "$public_key"
 
@@ -51,6 +71,16 @@ rm -f "$public_key"
 # routes everything and authenticates nothing.
 if ! grep -q "rsa_public_key" "$CONFIG"; then
   echo "the rendered config carries no verification key" >&2
+  exit 1
+fi
+if ! grep -q "name: ip-restriction" "$CONFIG"; then
+  echo "the rendered config carries no staff gate on the admin-only routes" >&2
+  exit 1
+fi
+twins="$(grep -c -- "-internal$" "$CONFIG" || true)"
+guards="$(grep -c "name: pre-function" "$CONFIG" || true)"
+if [ "$twins" -eq 0 ] || [ "$twins" != "$guards" ]; then
+  echo "the rendered config has $twins internal twins and $guards plaintext guards" >&2
   exit 1
 fi
 export KONG_DECLARATIVE_CONFIG="$CONFIG"

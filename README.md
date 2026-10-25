@@ -6,13 +6,14 @@ The **Kinetix API Gateway** is the single entry point for all external client RE
 
 ## 🏛️ Stack & Architecture
 
-- **Gateway Engine**: **Kong Gateway (DB-less Mode)** listening on port `:8443`, TLS only.
-- **Configuration Engine**: **Apple Pkl (`config/gateway.pkl`)** rendered to `/usr/local/kong/declarative/kong.yml` by `bin/entrypoint.sh` **when the container starts**, from `KINETIX_IDENTITY_JWT_PUBLIC_KEY_B64`, `KINETIX_JWT_ISSUER` and `KINETIX_GATEWAY_CORS_ORIGINS`. The image carries no key, issuer, origin or certificate, so one digest runs in every environment.
+- **Gateway Engine**: **Kong Gateway (DB-less Mode)**. The public listener is `:8443`, TLS only. A plaintext listener on `:8000` serves only the edge's calls on the Docker network and is never published (see "Internal listener" below).
+- **Configuration Engine**: **Apple Pkl (`config/gateway.pkl`)** rendered to `/usr/local/kong/declarative/kong.yml` by `bin/entrypoint.sh` **when the container starts**, from `KINETIX_IDENTITY_JWT_PUBLIC_KEY_B64`, `KINETIX_JWT_ISSUER`, `KINETIX_GATEWAY_CORS_ORIGINS`, `KINETIX_GATEWAY_STAFF_RANGES`, `KINETIX_PUBLIC_API_HOST`, `KINETIX_BACKOFFICE_HOST` and `KINETIX_SELLER_HOST` (and the optional `KINETIX_STORAGE_HOST`). The image carries no key, issuer, origin, address range, host or certificate, so one digest runs in every environment.
 - **TLS**: `KINETIX_GATEWAY_TLS_CERT_FILE` + `_KEY_FILE` (production, Let's Encrypt on disk) or `KINETIX_GATEWAY_TLS_CERT_B64` + `_KEY_B64` (the lab, from the SOPS store) — exactly one pair.
 - **Security & Plugins**:
-  - CORS from `KINETIX_GATEWAY_CORS_ORIGINS`, never with credentials. Empty leaves the `cors` plugin out, because Kong's plugin with no origins answers `*`.
-  - Global Rate Limiting (`rate-limiting` plugin, 100 req/min).
-  - Static Health Check route (`request-termination` plugin).
+  - CORS from `KINETIX_GATEWAY_CORS_ORIGINS`, never with credentials, on every TLS route except the browser apps' `/bff/`. Empty leaves the `cors` plugin out, because Kong's plugin with no origins answers `*`.
+  - Rate Limiting (`rate-limiting` plugin, 100 req/min per address and per route; Midtrans' callback 600) on every TLS route, none on the internal twins.
+  - Static Health Check route and `/.well-known/security.txt` (`request-termination` plugin).
+  - Admin-only routes accept only the staff network (`ip-restriction`, allowed ranges from `KINETIX_GATEWAY_STAFF_RANGES`, no default). See "Staff-only routes" below and `CLAUDE.md`.
 
 ---
 
@@ -20,12 +21,14 @@ The **Kinetix API Gateway** is the single entry point for all external client RE
 
 | External Path | Target Internal Microservice | Protocol | Path Rewrite |
 | :--- | :--- | :--- | :--- |
-| `GET /health` | Internal Static Response | HTTP | Returns JSON 200 OK |
+| `GET /health` | Internal Static Response | HTTP | Returns `{"status":"ok"}` |
+| `GET /.well-known/security.txt` | Internal Static Response | HTTP | RFC 9116, `text/plain; charset=utf-8`; `Canonical` names `KINETIX_PUBLIC_API_HOST` |
 | `POST /api/v1/auth/login`, `/register`, `/refresh`, `/2fa/verify`; `POST /api/v1/couriers/register` | `kinetix-identity-service:5000` | HTTP REST (public) | none — identity serves `/api/v1/...` itself |
 | `GET /.well-known/jwks.json` | `kinetix-identity-service:5000` | HTTP (public) | none |
 | `/api/v1/auth/*` (the rest: `me`, `logout`, `2fa/setup\|enable\|disable/{id}`), `/api/v1/users/{id}/profile` | `kinetix-identity-service:5000` | HTTP REST (JWT) | none |
-| `GET /api/v1/sellers/applications`, `GET /api/v1/sellers/{id}/application`, `POST /api/v1/sellers/{id}/onboard`, `/verify`, `/reject` | `kinetix-identity-service:5000` | HTTP REST (JWT) | none |
-| `GET /api/v1/couriers/applications`, `POST /api/v1/couriers/{principalId}/approve` | `kinetix-identity-service:5000` | HTTP REST (JWT) | none |
+| `GET /api/v1/sellers/{id}/application`, `POST /api/v1/sellers/{id}/onboard` | `kinetix-identity-service:5000` | HTTP REST (JWT) | none |
+| `GET /api/v1/sellers/applications`, `POST /api/v1/sellers/{id}/verify`, `/reject` | `kinetix-identity-service:5000` | HTTP REST (JWT, staff network only) | none |
+| `GET /api/v1/couriers/applications`, `POST /api/v1/couriers/{principalId}/approve` | `kinetix-identity-service:5000` | HTTP REST (JWT, staff network only) | none |
 | `/api/v1/products[/]`, `/products/create[/]`, `/products/manage/{id}[/]`, `/products/{sku}[/]`, `/api/v1/categories[/]`, `/categories/{id}[/]` | `kinetix-catalog-service:8000/api/*` | HTTP REST | `/api/v1/*` ➔ `/api/*`; a trailing slash, present or absent, reaches catalog as sent |
 | `/api/v1/products/search`, `/api/v1/products/suggest` | `kinetix-search-service:8088` | HTTP REST | none — the paths are the service's own |
 | `/api/v1/pricing/*` (`vouchers`, `vouchers/apply`, `vouchers/{code}`, `discounts`, `flash-sales`, `flash-sales/{product_id}`) | `kinetix-pricing-service:6000/api/v1/*` | HTTP REST | `/api/v1/pricing` ➔ `/api/v1`; creates answer 201 and need an `Idempotency-Key` |
@@ -35,12 +38,15 @@ The **Kinetix API Gateway** is the single entry point for all external client RE
 | `POST /api/v1/payment/gateway/midtrans/notifications` | `kinetix-payment-service:8003` | HTTP REST (public, 600/min per IP) | none — Midtrans' server-to-server callback |
 | `/api/v1/warehouse/*` | `kinetix-warehouse-service:3000/api/v1/*` | HTTP REST | `/api/v1/warehouse` ➔ `/api/v1` |
 | `/api/v1/matching/*` | `kinetix-matching-service:4000/api/v1/*` | HTTP REST (JWT) | `/api/v1/matching` ➔ `/api/v1` |
-| `/ws/v1/matching/driver` | `kinetix-matching-service:4000/driver/websocket` | WebSockets | Forwarded `Upgrade`; matching checks the access token and the courier role |
-| `/ws/v1/matching/merchant` | `kinetix-matching-service:4000/merchant/websocket` | WebSockets | Forwarded `Upgrade`; matching checks the access token and the seller role |
+| `/ws/v1/matching/driver`, `/ws/v1/matching/driver/websocket` | `kinetix-matching-service:4000/driver/websocket` | WebSockets | Forwarded `Upgrade`; matching checks the access token and the courier role. The second path is the one phoenix.js dials |
+| `/ws/v1/matching/merchant`, `/ws/v1/matching/merchant/websocket` | `kinetix-matching-service:4000/merchant/websocket` | WebSockets | Forwarded `Upgrade`; matching checks the access token and the seller role. The second path is the one phoenix.js dials |
 | `GET /api/v1/proofs/liabilities/{epoch\|latest}`, `GET /api/v1/proofs/evidence/orders/{order}`, `GET /api/v1/proofs/evidence/reviews/{review}` | `kinetix-notary-service:8010` | HTTP REST (JWT) | none — an account holder's own proofs |
 | `GET`/`POST /api/v1/proofs/registrations` | `kinetix-notary-service:8010` | HTTP REST (JWT) | none — GET serves the registration template, POST registers the address an account holder will request statements from |
 | `POST`/`DELETE /api/v1/notifications/devices`, `POST /api/v1/notifications/devices/verify` | `kinetix-notification-service:8004` | HTTP REST (JWT) | none — registers, verifies or forgets the caller's own handset for push; the principal is the token's `sub` |
 | any path on the host `KINETIX_STORAGE_HOST` | `kinetix-object-store:9000` | HTTP (presigned) | none — `Host` preserved for the signature, 16 MB per request; rendered only when the host is set |
+| `/bff/*` on the host `KINETIX_BACKOFFICE_HOST` | `kinetix-edge-service:8080` | HTTP (staff network only, no JWT, no CORS) | none — `Host` preserved; the edge's browser token handler |
+| `/bff/*` on the host `KINETIX_SELLER_HOST` | `kinetix-edge-service:8080` | HTTP (no JWT, no CORS) | none — `Host` preserved |
+| any other path on those two hosts | Internal Static Response | HTTP | `404 {"message":"Not found"}` — no API route answers on a browser app's origin |
 
 "(JWT)" means Kong's `jwt` plugin checks the token's signature and `exp` before the request leaves the
 gateway; every service still verifies the token itself. The notary and notification routes accept only the
@@ -59,13 +65,51 @@ box that simply finds nothing.
 
 ---
 
+## 🔐 Staff-only routes
+
+The paths only an admin may call are served by dedicated routes that also check the caller's address: Kong's
+`ip-restriction` allows only `KINETIX_GATEWAY_STAFF_RANGES`, the staff network. Everything else about them
+(upstream, path rewrite, `jwt`, CORS, rate limits) is the route they were split from.
+
+| Paths | Service |
+| :--- | :--- |
+| `GET /api/v1/sellers/applications`, `POST /api/v1/sellers/{id}/verify`, `POST /api/v1/sellers/{id}/reject`, `GET /api/v1/couriers/applications`, `POST /api/v1/couriers/{principalId}/approve` | identity |
+| `POST`, `PUT`, `PATCH`, `DELETE` on `/api/v1/categories` and `/api/v1/categories/{id}` (`GET` stays public) | catalog |
+| `/api/v1/warehouse/bins`, `/api/v1/warehouse/stock_receipts`, `/api/v1/warehouse/stock_adjustments` | warehouse |
+| `/api/v1/matching/drivers` and below, `/api/v1/matching/backoffice` and below | matching |
+| `/api/v1/orders/sagas` and below, `GET /api/v1/orders/returns/needs-attention`, `POST /api/v1/orders/returns/{returnNumber}/reject`, `POST /api/v1/orders/{orderNumber}/complete` | order |
+| `/bff/` and below on `KINETIX_BACKOFFICE_HOST` (the backoffice's sign-in and every call it makes) | edge |
+
+From any other address they answer `403 {"message":"This route is not available from your network","request_id":"…"}`.
+On identity's and matching's, a request without a valid token gets the `jwt` plugin's `401` first. Staff reach
+them over WireGuard to the server's tunnel address with the public host name
+(`curl --resolve <api host>:443:<tunnel address> https://<api host>/…`); `CLAUDE.md` explains why Kong then sees
+the tunnel address, and what a proxy in front would change. Endpoints that a user or an admin may call are not
+fenced.
+
+---
+
+## 🔌 Internal listener (plaintext, for the edge)
+
+`kinetix-edge-service` calls the API at `http://kinetix-api-gateway:8000`, on the Docker network only. Every API
+route above has an internal twin, `<route>-internal`, generated from the same definition: the same paths,
+methods, service, path rewrite and JWT check, without the staff gate, the rate limit or CORS. A twin answers only
+plaintext requests on port 8000 that name the host `kinetix-api-gateway`; a TLS request that names that host gets
+`421 Misdirected Request`, and a plaintext request for anything else gets Kong's `426`. `/health`,
+`security.txt`, the sockets, storage and `/bff/` have no twin. Upstreams see `X-Forwarded-For: <what the edge
+sent>, <the edge's address>` and `X-Forwarded-Proto: https` (the browser's hop). Why, and what someone on the network could do with
+it: `CLAUDE.md`, "The internal listener and the twins".
+
+---
+
 ## 🌐 Browser Access (CORS)
 
 When `KINETIX_GATEWAY_CORS_ORIGINS` names origins, the `cors` plugin lets a page read these response headers
 besides the CORS-safelisted ones: `X-Request-Id` (the correlation id), `Allow` (on a service's 405),
 `Idempotent-Replayed` (pricing's replay of an earlier create), `Location` (on a 201) and `Retry-After` (on a
 503 from a service, and on Kong's own 429). A page may send `Accept`, `Authorization`, `Content-Type`,
-`Idempotency-Key`, `X-Request-Id` and `X-Requested-With`.
+`Idempotency-Key`, `X-Request-Id`, `X-Requested-With`, `X-Kinetix-Client` (the client's name) and
+`X-Firebase-AppCheck` (its App Check proof).
 
 ---
 
@@ -104,6 +148,10 @@ docker run -p 8443:8443 \
   -e KINETIX_IDENTITY_JWT_PUBLIC_KEY_B64="$(base64 < identity-public.pem)" \
   -e KINETIX_JWT_ISSUER=https://identity.kinetix.local \
   -e KINETIX_GATEWAY_CORS_ORIGINS='*' \
+  -e KINETIX_GATEWAY_STAFF_RANGES=172.17.0.1/32 \
+  -e KINETIX_PUBLIC_API_HOST=localhost:8443 \
+  -e KINETIX_BACKOFFICE_HOST=backoffice.localhost:8443 \
+  -e KINETIX_SELLER_HOST=seller.localhost:8443 \
   -e KINETIX_GATEWAY_TLS_CERT_B64="$(base64 < server.pem)" \
   -e KINETIX_GATEWAY_TLS_KEY_B64="$(base64 < server.key)" \
   kinetix-api-gateway

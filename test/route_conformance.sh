@@ -59,13 +59,22 @@ parse() {
   printf '%s\n' "$KONG_YML" | awk '
     /^- name: /            { svc=substr($0,9) }
     /^  url: /             { url=substr($0,8) }
-    /^    - \//            { print svc "\t" url "\t" substr($0,7) }
+    /^  - name: /          { hosted=0 }
+    /^    hosts:/          { hosted=1 }
+    /^    - \// && !hosted { print svc "\t" url "\t" substr($0,7) }
+  '
+}
+
+upstreams() {
+  printf '%s\n' "$KONG_YML" | awk '
+    /^- name: /            { svc=substr($0,9) }
+    /^  url: /             { print svc "\t" substr($0,8) }
   '
 }
 
 echo "── 1. Every upstream host resolves from inside the gateway"
 seen=""
-while IFS=$'\t' read -r svc url path; do
+while IFS=$'\t' read -r svc url; do
   host="$(printf '%s' "$url" | sed -E 's#https?://([^:/]+).*#\1#')"
   case " $seen " in *" $host "*) continue ;; esac
   seen="$seen $host"
@@ -75,7 +84,7 @@ while IFS=$'\t' read -r svc url path; do
   else
     bad "$host does NOT resolve — no container answers to this name"
   fi
-done < <(parse)
+done < <(upstreams)
 
 echo
 echo "── 2. Every declared public path reaches its upstream"
@@ -126,6 +135,137 @@ if [ "$published" = "1" ]; then
   ok "exactly one published port mapping in compose.yaml"
 else
   bad "$published published port mappings — expected 1 (the gateway)"
+fi
+
+echo
+echo "── 5. The staff gate gives every admin-only route the same answer, and no public route"
+GATE_MESSAGE="This route is not available from your network"
+gated=0; reached=0
+gate_answer() {
+  local method="$1" path="$2" body code
+  body="$("${CURL[@]}" -s --max-time 10 -X "$method" -w '\n%{http_code}' "$BASE$path")"
+  code="${body##*$'\n'}"
+  body="${body%$'\n'*}"
+  if [ "$code" = 403 ] && printf '%s' "$body" | grep -qF "$GATE_MESSAGE"; then
+    echo gated
+  elif [ "$code" = 404 ] && printf '%s' "$body" | grep -q 'no Route matched'; then
+    echo unrouted
+  else
+    echo "reached:$code"
+  fi
+}
+while read -r method path; do
+  answer="$(gate_answer "$method" "$path")"
+  case "$answer" in
+    gated)    gated=$((gated+1)) ;;
+    reached*) reached=$((reached+1)) ;;
+    *)        bad "$method $path -> $answer  (an admin-only path no route serves)" ;;
+  esac
+done <<'ADMIN'
+POST /api/v1/categories
+PUT /api/v1/categories/1
+DELETE /api/v1/categories/1
+POST /api/v1/warehouse/bins
+POST /api/v1/warehouse/stock_receipts
+POST /api/v1/warehouse/stock_adjustments
+GET /api/v1/orders/sagas/needs-attention
+GET /api/v1/orders/returns/needs-attention
+POST /api/v1/orders/returns/RET-0/reject
+POST /api/v1/orders/ORD-0/complete
+ADMIN
+if [ "$gated" -gt 0 ] && [ "$reached" -gt 0 ]; then
+  bad "$gated admin-only routes refused this address and $reached let it through: a route lost its gate"
+elif [ "$gated" -gt 0 ]; then
+  ok "this address is outside the staff range: all $gated admin-only routes answered the gate's 403"
+else
+  ok "this address is inside the staff range: all $reached admin-only routes reached their service"
+fi
+while read -r method path; do
+  answer="$(gate_answer "$method" "$path")"
+  case "$answer" in
+    gated) bad "$method $path -> the staff gate refused a public route" ;;
+    *)     ok  "$method $path -> not gated ($answer)" ;;
+  esac
+done <<'PUBLIC'
+GET /api/v1/categories
+GET /api/v1/products/
+GET /api/v1/warehouse/fulfillment_tasks
+POST /api/v1/orders/checkout
+GET /api/v1/orders/my-orders
+PUBLIC
+
+echo
+echo "── 6. The browser-app hosts serve /bff/ and nothing else"
+base_authority="${BASE#https://}"
+base_authority="${base_authority%%/*}"
+for variable in KINETIX_BACKOFFICE_HOST KINETIX_SELLER_HOST; do
+  app="$(docker exec "$GW" printenv "$variable" 2>/dev/null || true)"
+  if [ -z "$app" ]; then
+    bad "$variable is not set on the gateway"
+    continue
+  fi
+  app_name="${app%%:*}"
+  app_port="${app##*:}"
+  [ "$app_port" = "$app" ] && app_port=443
+  route=(--connect-to "$app_name:$app_port:$base_authority")
+  body="$("${CURL[@]}" -s --max-time 10 "${route[@]}" -w '\n%{http_code}' "https://$app_name:$app_port/api/v1/products")"
+  code="${body##*$'\n'}"
+  body="${body%$'\n'*}"
+  if [ "$code" = 404 ] && printf '%s' "$body" | grep -qF '"message":"Not found"'; then
+    ok "$app/api/v1/products -> 404: no API route answers on this host"
+  else
+    bad "$app/api/v1/products -> $code $body (wanted the browser-app host's 404; is $app_name on the gateway's certificate?)"
+  fi
+  body="$("${CURL[@]}" -s --max-time 10 "${route[@]}" -w '\n%{http_code}' "https://$app_name:$app_port/bff/session")"
+  code="${body##*$'\n'}"
+  body="${body%$'\n'*}"
+  case "$code" in
+    000) bad "$app/bff/session -> no response (TLS name or connection)" ;;
+    404)
+      if printf '%s' "$body" | grep -qE 'no Route matched|"message":"Not found"'; then
+        bad "$app/bff/session -> 404 from Kong: /bff/ is not routed on this host"
+      else
+        ok "$app/bff/session -> 404 from the edge"
+      fi ;;
+    403)
+      if printf '%s' "$body" | grep -qF "$GATE_MESSAGE"; then
+        ok "$app/bff/session -> 403 from the staff gate (this address is outside the staff range)"
+      else
+        ok "$app/bff/session -> 403 from the edge"
+      fi ;;
+    502|503|504) bad "$app/bff/session -> $code: the edge is not reachable" ;;
+    *) ok "$app/bff/session -> $code from the edge" ;;
+  esac
+done
+
+echo
+echo "── 7. The internal listener: twins in plaintext, never over TLS, never published"
+if [ -z "$(docker port "$GW" 8000 2>/dev/null)" ]; then
+  ok "port 8000 is not published"
+else
+  bad "port 8000 is published: $(docker port "$GW" 8000)"
+fi
+network="$(docker inspect -f '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}} {{end}}' "$GW" | awk '{print $1}')"
+internal() {
+  docker run --rm --network "$network" alpine:3.22.2@sha256:4b7ce07002c69e8f3d704a9c5d6fd3053be500b7f1c69fc0d80990c2ad8dd412 \
+    wget -q -S -O /dev/null "http://kinetix-api-gateway:8000$1" 2>&1 | awk '/^  HTTP\// { code=$2 } END { print code }'
+}
+code="$(internal /api/v1/products/)"
+case "$code" in
+  ""|426|404|5*) bad "plaintext /api/v1/products/ -> '${code}': the twin did not reach catalog" ;;
+  *) ok "plaintext /api/v1/products/ -> $code from catalog through its twin" ;;
+esac
+code="$(internal /health)"
+if [ "$code" = 426 ]; then
+  ok "plaintext /health -> 426: no twin for the static routes"
+else
+  bad "plaintext /health -> '$code' (wanted 426)"
+fi
+code="$("${CURL[@]}" -s -o /dev/null -w '%{http_code}' --max-time 10 -H "Host: kinetix-api-gateway" "$BASE/api/v1/products/")"
+if [ "$code" = 421 ]; then
+  ok "TLS naming the internal host -> 421: no twin answers the public listener"
+else
+  bad "TLS naming the internal host -> $code (wanted 421)"
 fi
 
 echo
