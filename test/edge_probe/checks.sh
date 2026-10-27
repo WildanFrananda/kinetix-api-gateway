@@ -78,6 +78,47 @@ reaches() {
   fi
 }
 
+token_not_read_from_query_or_cookie() {
+  call "$1" "$2?jwt=$TOKEN" none
+  if [ "$status" = 401 ] \
+    && [ "$(message)" = Unauthorized ] \
+    && [ "$(header www-authenticate)" = Bearer ] \
+    && [ "$(jq -r 'has("request")' /tmp/body 2>/dev/null)" = false ]; then
+    ok "$SCHEME $1 $2?jwt=<valid token> -> 401 Unauthorized, Bearer: no token is read from the query"
+  else
+    bad "$SCHEME $1 $2?jwt=<valid token> -> $status $(head -c 200 /tmp/body) WWW-Authenticate '$(header www-authenticate)' (wanted jwt's 401 for a missing token)"
+  fi
+
+  call "$1" "$2" none -H "Cookie: jwt=$TOKEN"
+  if [ "$status" = 401 ] && [ "$(message)" = Unauthorized ] && [ "$(header www-authenticate)" = Bearer ]; then
+    ok "$SCHEME $1 $2 with the valid token in a jwt cookie -> 401 Unauthorized: no token is read from a cookie"
+  else
+    bad "$SCHEME $1 $2 with the valid token in a jwt cookie -> $status $(head -c 200 /tmp/body) (wanted jwt's 401 for a missing token)"
+  fi
+}
+
+upgrade() {
+  path="$1"
+  shift
+  call GET "$path?vsn=2.0.0&token=probe" none \
+    -H "Connection: Upgrade" \
+    -H "Upgrade: websocket" \
+    -H "Sec-WebSocket-Version: 13" \
+    -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" \
+    "$@"
+}
+
+upgrade_reaches() {
+  upgrade "$1"
+  got="$(jq -r '"\(.request.port) \(.request.path) \(.request.query.vsn) \(.request.headers.upgrade) \(.request.headers["x-forwarded-proto"])"' /tmp/body 2>/dev/null)"
+  want="4000 $2 2.0.0 websocket https"
+  if [ "$status" = 200 ] && [ "$got" = "$want" ] && listener_matches; then
+    ok "$SCHEME upgrade $1 (Host $NAME) -> :4000 $2 with its query, Upgrade and X-Forwarded-Proto https (rate limit: ${limit:-none})"
+  else
+    bad "$SCHEME upgrade $1 (Host $NAME) -> $status '$got' rate limit '${limit:-}' (wanted '$want')"
+  fi
+}
+
 refused() {
   call "$@"
   if [ "$status" = 403 ] && [ "$(message)" = "$GATE_MESSAGE" ]; then
@@ -89,6 +130,10 @@ refused() {
 
 misdirected() {
   call "$@"
+  misdirected_answer "$1" "$2"
+}
+
+misdirected_answer() {
   if [ "$status" = 421 ] \
     && [ "$(message)" = "Misdirected Request" ] \
     && [ "$(jq -r 'has("request")' /tmp/body 2>/dev/null)" = false ]; then
@@ -100,6 +145,10 @@ misdirected() {
 
 needs_tls() {
   call "$@"
+  needs_tls_answer "$1" "$2"
+}
+
+needs_tls_answer() {
   if [ "$status" = 426 ] && [ "$(message)" = "Please use HTTPS protocol" ]; then
     ok "plaintext $1 $2 (Host $NAME) -> 426: only a TLS route matches, no twin"
   else
@@ -208,13 +257,23 @@ POST /api/v1/notifications/devices token 8004 /api/v1/notifications/devices
 ROUTES
 }
 
-socket_table() {
+driver_socket_table() {
   cat <<'ROUTES'
 GET /ws/v1/matching/driver none 4000 /driver/websocket
-GET /ws/v1/matching/merchant none 4000 /merchant/websocket
 GET /ws/v1/matching/driver/websocket none 4000 /driver/websocket
+ROUTES
+}
+
+merchant_socket_table() {
+  cat <<'ROUTES'
+GET /ws/v1/matching/merchant none 4000 /merchant/websocket
 GET /ws/v1/matching/merchant/websocket none 4000 /merchant/websocket
 ROUTES
+}
+
+socket_table() {
+  driver_socket_table
+  merchant_socket_table
 }
 
 admin_routes() {
@@ -226,6 +285,9 @@ admin_routes() {
     else
       refused "$method" "$path" "$auth"
     fi
+    if [ "$auth" = token ]; then
+      token_not_read_from_query_or_cookie "$method" "$path"
+    fi
   done < /tmp/admin_table
 }
 
@@ -235,6 +297,9 @@ public_routes() {
   while read -r method path auth port upstream; do
     [ -z "$method" ] && continue
     reaches "$method" "$path" "$auth" "$port" "$upstream"
+    if [ "$auth" = token ]; then
+      token_not_read_from_query_or_cookie "$method" "$path"
+    fi
   done < /tmp/public_table
 }
 
@@ -262,17 +327,8 @@ edge_cases() {
   fi
 
   for socket in driver merchant; do
-    call GET "/ws/v1/matching/$socket/websocket?vsn=2.0.0&token=probe" none \
-      -H "Connection: Upgrade" \
-      -H "Upgrade: websocket" \
-      -H "Sec-WebSocket-Version: 13" \
-      -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ=="
-    got="$(jq -r '"\(.request.port) \(.request.path) \(.request.query.vsn) \(.request.headers.upgrade)"' /tmp/body 2>/dev/null)"
-    if [ "$status" = 200 ] && [ "$got" = "4000 /$socket/websocket 2.0.0 websocket" ]; then
-      ok "the Phoenix client's /ws/v1/matching/$socket/websocket reaches :4000 /$socket/websocket with its query and Upgrade"
-    else
-      bad "/ws/v1/matching/$socket/websocket -> $status $got"
-    fi
+    upgrade_reaches "/ws/v1/matching/$socket/websocket" "/$socket/websocket"
+    upgrade_reaches "/ws/v1/matching/$socket" "/$socket/websocket"
   done
 
   target https "$STORAGE_HOST" 8443
@@ -438,6 +494,10 @@ misdirected_twins() {
   misdirected GET /api/v1/sellers/applications none -H "Host: $INTERNAL_HOST"
   misdirected GET /api/v1/matching/drivers token -H "Host: $INTERNAL_HOST"
   misdirected POST /api/v1/warehouse/bins none -H "Host: $INTERNAL_HOST:8000"
+  upgrade /ws/v1/matching/merchant/websocket -H "Host: $INTERNAL_HOST"
+  misdirected_answer GET /ws/v1/matching/merchant/websocket
+  upgrade /ws/v1/matching/merchant -H "Host: $INTERNAL_HOST:8000"
+  misdirected_answer GET /ws/v1/matching/merchant
 
   call POST /api/v1/orders/ORD-1/complete none -H "Host: KINETIX-API-GATEWAY"
   if [ "$status" = 421 ] || { [ "$status" = 403 ] && [ "$SIDE" != staff ]; } || { [ "$status" = 200 ] && [ "$SIDE" = staff ] && listener_matches; }; then
@@ -461,13 +521,25 @@ plaintext_twins() {
       else
         bad "plaintext $method $path without a token -> $status $(head -c 200 /tmp/body)"
       fi
+      token_not_read_from_query_or_cookie "$method" "$path"
     fi
   done < /tmp/plain_table
 
-  socket_table > /tmp/socket_table
+  merchant_socket_table > /tmp/socket_table
+  while read -r method path auth port upstream; do
+    [ -z "$method" ] && continue
+    reaches "$method" "$path" "$auth" "$port" "$upstream"
+  done < /tmp/socket_table
+  upgrade_reaches /ws/v1/matching/merchant/websocket /merchant/websocket
+  upgrade_reaches /ws/v1/matching/merchant /merchant/websocket
+
+  driver_socket_table > /tmp/socket_table
   while read -r method path auth port upstream; do
     [ -z "$method" ] && continue
     needs_tls "$method" "$path" "$auth"
+    socket="$path"
+    upgrade "$socket"
+    needs_tls_answer GET "$socket (upgrade)"
   done < /tmp/socket_table
   needs_tls GET /health none
   needs_tls GET /.well-known/security.txt none
@@ -482,6 +554,10 @@ plaintext_twins() {
     else
       needs_tls GET /bff/session none
       needs_tls GET /api/v1/products none
+    fi
+    if [ "$name" != "$STORAGE_HOST" ]; then
+      upgrade /ws/v1/matching/merchant/websocket
+      needs_tls_answer GET "/ws/v1/matching/merchant/websocket (upgrade)"
     fi
   done
   target http "$INTERNAL_HOST" 8000

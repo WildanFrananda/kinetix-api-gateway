@@ -39,17 +39,19 @@ The **Kinetix API Gateway** is the single entry point for all external client RE
 | `/api/v1/warehouse/*` | `kinetix-warehouse-service:3000/api/v1/*` | HTTP REST | `/api/v1/warehouse` ➔ `/api/v1` |
 | `/api/v1/matching/*` | `kinetix-matching-service:4000/api/v1/*` | HTTP REST (JWT) | `/api/v1/matching` ➔ `/api/v1` |
 | `/ws/v1/matching/driver`, `/ws/v1/matching/driver/websocket` | `kinetix-matching-service:4000/driver/websocket` | WebSockets | Forwarded `Upgrade`; matching checks the access token and the courier role. The second path is the one phoenix.js dials |
-| `/ws/v1/matching/merchant`, `/ws/v1/matching/merchant/websocket` | `kinetix-matching-service:4000/merchant/websocket` | WebSockets | Forwarded `Upgrade`; matching checks the access token and the seller role. The second path is the one phoenix.js dials |
+| `/ws/v1/matching/merchant`, `/ws/v1/matching/merchant/websocket` | `kinetix-matching-service:4000/merchant/websocket` | WebSockets | Forwarded `Upgrade`; matching checks the access token and the seller role. The second path is the one phoenix.js dials. Also on the internal listener, for the edge. Read and write timeouts 90 s |
 | `GET /api/v1/proofs/liabilities/{epoch\|latest}`, `GET /api/v1/proofs/evidence/orders/{order}`, `GET /api/v1/proofs/evidence/reviews/{review}` | `kinetix-notary-service:8010` | HTTP REST (JWT) | none — an account holder's own proofs |
 | `GET`/`POST /api/v1/proofs/registrations` | `kinetix-notary-service:8010` | HTTP REST (JWT) | none — GET serves the registration template, POST registers the address an account holder will request statements from |
 | `POST`/`DELETE /api/v1/notifications/devices`, `POST /api/v1/notifications/devices/verify` | `kinetix-notification-service:8004` | HTTP REST (JWT) | none — registers, verifies or forgets the caller's own handset for push; the principal is the token's `sub` |
 | any path on the host `KINETIX_STORAGE_HOST` | `kinetix-object-store:9000` | HTTP (presigned) | none — `Host` preserved for the signature, 16 MB per request; rendered only when the host is set |
-| `/bff/*` on the host `KINETIX_BACKOFFICE_HOST` | `kinetix-edge-service:8080` | HTTP (staff network only, no JWT, no CORS) | none — `Host` preserved; the edge's browser token handler |
-| `/bff/*` on the host `KINETIX_SELLER_HOST` | `kinetix-edge-service:8080` | HTTP (no JWT, no CORS) | none — `Host` preserved |
+| `/bff/*` on the host `KINETIX_BACKOFFICE_HOST` | `kinetix-edge-service:8080` | HTTP (staff network only, no JWT, no CORS) | none — `Host` preserved; the edge's browser token handler. Read and write timeouts 90 s |
+| `/bff/*` on the host `KINETIX_SELLER_HOST` | `kinetix-edge-service:8080` | HTTP and WebSockets (no JWT, no CORS) | none — `Host` preserved. Read and write timeouts 90 s: the edge holds the merchant socket with 90 s idle timeouts |
 | any other path on those two hosts | Internal Static Response | HTTP | `404 {"message":"Not found"}` — no API route answers on a browser app's origin |
 
 "(JWT)" means Kong's `jwt` plugin checks the token's signature and `exp` before the request leaves the
-gateway; every service still verifies the token itself. The notary and notification routes accept only the
+gateway; every service still verifies the token itself. Kong reads the token from `Authorization: Bearer`
+only: a token in a `?jwt=` query or in a cookie is not read, and the request gets `401
+{"message":"Unauthorized"}` with `WWW-Authenticate: Bearer`, as if it carried none. The notary and notification routes accept only the
 methods listed, plus `OPTIONS`: a method a route does not list gets Kong's 404 `no Route matched`, not the
 service's 405. `OPTIONS` is listed because a route that refuses it answers a browser's preflight with that
 404 before the `cors` plugin runs; the `jwt` plugins skip `OPTIONS` (`run_on_preflight = false`).
@@ -95,8 +97,10 @@ fenced.
 route above has an internal twin, `<route>-internal`, generated from the same definition: the same paths,
 methods, service, path rewrite and JWT check, without the staff gate, the rate limit or CORS. A twin answers only
 plaintext requests on port 8000 that name the host `kinetix-api-gateway`; a TLS request that names that host gets
-`421 Misdirected Request`, and a plaintext request for anything else gets Kong's `426`. `/health`,
-`security.txt`, the sockets, storage and `/bff/` have no twin. Upstreams see `X-Forwarded-For: <what the edge
+`421 Misdirected Request`, and a plaintext request for anything else gets Kong's `426`. The seller's socket
+(`/ws/v1/matching/merchant` and `/websocket`) has a twin too: the edge proxies the seller web's WebSocket through
+it, and matching checks the token. `/health`, `security.txt`, the courier socket, storage and `/bff/` have no
+twin. Upstreams see `X-Forwarded-For: <what the edge
 sent>, <the edge's address>` and `X-Forwarded-Proto: https` (the browser's hop). Why, and what someone on the network could do with
 it: `CLAUDE.md`, "The internal listener and the twins".
 
