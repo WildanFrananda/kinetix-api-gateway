@@ -24,6 +24,7 @@ hidden sellerHostProp: String(matches(Regex(hostPattern)), !endsWith(":443")) = 
 
 hidden internalHost: String = "kinetix-api-gateway"
 hidden internalPort: Int = 8000
+hidden idleSocketTimeout: Int = 90000
 
 hidden hostNames: List<String> = List(publicApiHost, storageHost, backofficeHostProp, sellerHostProp, internalHost)
   .filter((host) -> !host.isEmpty)
@@ -50,6 +51,8 @@ hidden jwtPlugin: Dynamic = new {
   config {
     key_claim_name = "iss"
     claims_to_verify { "exp" }
+    uri_param_names = List()
+    cookie_names = List()
     run_on_preflight = false
   }
 }
@@ -188,6 +191,8 @@ services {
   new {
     name = "edge-service"
     url = "http://kinetix-edge-service:8080"
+    read_timeout = idleSocketTimeout
+    write_timeout = idleSocketTimeout
     routes {
       browserApp(new Dynamic {
         name = "edge-backoffice-route"
@@ -436,8 +441,10 @@ services {
   new {
     name = "matching-merchant-socket"
     url = "http://kinetix-matching-service:4000/merchant/websocket"
+    read_timeout = idleSocketTimeout
+    write_timeout = idleSocketTimeout
     routes {
-      publicOnly(new Dynamic {
+      ...api(new Dynamic {
         name = "matching-merchant-socket-route"
         paths {
           "/ws/v1/matching/merchant"

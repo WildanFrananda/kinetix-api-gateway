@@ -143,7 +143,7 @@ elif [ -n "${KINETIX_GATEWAY_TLS_CERT_B64:-}" ] && [ -n "${KINETIX_GATEWAY_TLS_K
   export KONG_SSL_CERT_KEY="$TLS_DIR/server.key"
 else
   echo "TLS is required: set KINETIX_GATEWAY_TLS_CERT_FILE and _KEY_FILE, or KINETIX_GATEWAY_TLS_CERT_B64 and _KEY_B64." >&2
-  echo "The gateway serves TLS only; there is no plaintext listener to fall back to." >&2
+  echo "The public listener is TLS only; the gateway never falls back to plaintext." >&2
   exit 1
 fi
 

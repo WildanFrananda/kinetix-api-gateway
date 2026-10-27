@@ -6,7 +6,6 @@ def without_twin: [
   "health-route",
   "security-txt-route",
   "matching-driver-socket-route",
-  "matching-merchant-socket-route",
   "storage-route",
   "edge-backoffice-route",
   "edge-seller-route",
@@ -15,8 +14,16 @@ def without_twin: [
 ];
 def browser_app: .name as $name | ["edge-backoffice-route", "edge-seller-route", "backoffice-unrouted-route", "seller-unrouted-route"] | any(.[]; . == $name);
 def route($name): first(.[] | select(.name == $name)) // {};
+def long_lived: .name as $name | ["edge-service", "matching-merchant-socket"] | any(.[]; . == $name);
+def timeouts: {connect_timeout, read_timeout, write_timeout};
 
 [.services[] as $service | $service.routes[] | . + {service_url: $service.url}] as $routes
+| [
+    (.plugins[]? | . + {owner: "the global plugins"}),
+    (.services[] | .name as $owner | .plugins[]? | . + {owner: $owner}),
+    ($routes[] | .name as $owner | .plugins[]? | . + {owner: $owner})
+  ] as $all_plugins
+| ($all_plugins | map(select(.name == "jwt"))) as $jwt_plugins
 | ($routes | map(select(twin))) as $twins
 | ($routes | map(select(twin | not))) as $tls
 | ($tls | map(select(.name as $name | without_twin | any(.[]; . == $name) | not))) as $api
@@ -25,6 +32,18 @@ def route($name): first(.[] | select(.name == $name)) // {};
       then "the global plugins are \([.plugins[].name]): rate-limiting and cors would reach the twins and /bff/"
       else empty end),
     (if ($twins | length) == 0 then "no internal twin was rendered" else empty end),
+    (if ($jwt_plugins | length) == 0 then "no jwt plugin was rendered" else empty end),
+    (if ([.services[] | select(long_lived)] | length) != 2
+      then "the edge's and the merchant socket's services are not both rendered: \([.services[].name])"
+      else empty end),
+    (.services[] | select(long_lived)
+      | select(timeouts != {connect_timeout: null, read_timeout: 90000, write_timeout: 90000})
+      | "\(.name) does not hold an idle socket for 90 s on Kong's connect default: \(timeouts)"),
+    (.services[] | select(long_lived | not)
+      | select(timeouts != {connect_timeout: null, read_timeout: null, write_timeout: null})
+      | "\(.name) changes Kong's default timeouts: \(timeouts)"),
+    ($jwt_plugins[] | select(.config.uri_param_names != [] or .config.cookie_names != [])
+      | "\(.owner)'s jwt reads a token from the query or a cookie: \(.config | {uri_param_names, cookie_names})"),
     ($twins[] | select(.protocols != ["http"] or .hosts != ["kinetix-api-gateway"])
       | "\(.name) is not bound to the internal host over plaintext: \(.protocols) \(.hosts)"),
     ($twins[] | select(plugin_names[0] != "pre-function")

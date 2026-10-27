@@ -248,8 +248,14 @@ fi
 network="$(docker inspect -f '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}} {{end}}' "$GW" | awk '{print $1}')"
 internal() {
   docker run --rm --network "$network" alpine:3.22.2@sha256:4b7ce07002c69e8f3d704a9c5d6fd3053be500b7f1c69fc0d80990c2ad8dd412 \
-    wget -q -S -O /dev/null "http://kinetix-api-gateway:8000$1" 2>&1 | awk '/^  HTTP\// { code=$2 } END { print code }'
+    wget -q -S -O /dev/null "${@:2}" "http://kinetix-api-gateway:8000$1" 2>&1 | awk '/^  HTTP\// { code=$2 } END { print code }'
 }
+upgrade_headers=(
+  --header "Connection: Upgrade"
+  --header "Upgrade: websocket"
+  --header "Sec-WebSocket-Version: 13"
+  --header "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ=="
+)
 code="$(internal /api/v1/products/)"
 case "$code" in
   ""|426|404|5*) bad "plaintext /api/v1/products/ -> '${code}': the twin did not reach catalog" ;;
@@ -267,6 +273,32 @@ if [ "$code" = 421 ]; then
 else
   bad "TLS naming the internal host -> $code (wanted 421)"
 fi
+code="$(internal /ws/v1/matching/merchant/websocket "${upgrade_headers[@]}")"
+case "$code" in
+  ""|426|404|5*) bad "plaintext upgrade to /ws/v1/matching/merchant/websocket -> '${code}': the twin did not reach matching" ;;
+  *) ok "plaintext upgrade to /ws/v1/matching/merchant/websocket -> $code from matching through its twin" ;;
+esac
+code="$(internal /ws/v1/matching/driver/websocket "${upgrade_headers[@]}")"
+if [ "$code" = 426 ]; then
+  ok "plaintext upgrade to /ws/v1/matching/driver/websocket -> 426: the driver socket has no twin"
+else
+  bad "plaintext upgrade to /ws/v1/matching/driver/websocket -> '$code' (wanted 426)"
+fi
+
+echo
+echo "── 8. Kong reads a token from the Authorization header only"
+for where in "query" "cookie"; do
+  if [ "$where" = query ]; then
+    body="$("${CURL[@]}" -s --max-time 10 "$BASE/api/v1/auth/me?jwt=not-a-token")"
+  else
+    body="$("${CURL[@]}" -s --max-time 10 -H "Cookie: jwt=not-a-token" "$BASE/api/v1/auth/me")"
+  fi
+  if printf '%s' "$body" | grep -qF '"message":"Unauthorized"'; then
+    ok "GET /api/v1/auth/me with a token in the $where -> 401 Unauthorized: not read (a token read there would be refused as a bad token)"
+  else
+    bad "GET /api/v1/auth/me with a token in the $where -> $body (wanted the jwt plugin's 401 for a missing token)"
+  fi
+done
 
 echo
 printf '%d passed, %d failed\n' "$pass" "$fail"

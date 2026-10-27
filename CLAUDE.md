@@ -46,8 +46,8 @@ Hardening item 3, option (a), ruled 2026-10-22. Each admin-only path has a dedic
 | `order-staff-route` | `~/api/v1/orders/(?i)sagas`, `~/api/v1/orders/(?i)returns/needs-attention`, `~/api/v1/orders/(?i)returns/[^/]+/reject`, `~/api/v1/orders/[^/]+/(?i)complete` | `order-service` |
 
 Each staff route keeps what the route it was split from had: the same upstream host and resulting path, the same
-`strip_path`, the same route plugins (`jwt` on identity and matching), and the global `cors`, `correlation-id`,
-`prometheus` and `rate-limiting` plugins. `PATCH` on categories is fenced although catalog serves none, so a
+`strip_path`, the same route plugins (`jwt` on identity and matching), the per-route `rate-limiting` (and `cors` when
+origins are configured) that every TLS route carries, and the global `correlation-id` and `prometheus` plugins. `PATCH` on categories is fenced although catalog serves none, so a
 future one is admin-only from its first day. Mixed endpoints, which a user or an admin may call
 (`GET /api/v1/users/{id}/profile`, `GET /api/v1/sellers/{id}/application`, `GET /api/v1/orders/{orderId}`,
 pricing's creates), are not fenced: a network cannot tell the two callers apart. They rely on identity's attempt
@@ -194,8 +194,8 @@ which a Dockerfile cannot undo, so `docker run -P` would publish it: publish por
 does (8443 only). Every API route is written once, inside `...api(...)`, and Pkl renders it twice:
 the route the TLS listener serves (`protocols = ["https"]`, with its staff gate, rate limit and `cors`), and
 its twin `<name>-internal` (same paths, methods, service, `strip_path` and `jwt`; no `ip-restriction`, no
-`rate-limiting`, no `cors`). `/health`, `security.txt`, the sockets, storage and the browser-app routes have no
-twin (`publicOnly`, `browserApp`).
+`rate-limiting`, no `cors`). `/health`, `security.txt`, the courier socket, storage and the browser-app routes
+have no twin (`publicOnly`, `browserApp`); the merchant socket has one (below).
 
 **Why `protocols` alone would not do.** Kong 3.9 does not match on `protocols` for HTTP routes: the
 `traditional_compatible` router never puts `net.protocol` in a route's expression, and after matching it
@@ -225,8 +225,8 @@ limit on `/bff/`. The services' own role checks still apply to every call.
 the `kinetix` network. A container there could call an admin-only path through a twin from an address
 outside the staff range, and without a rate limit, but it still needs a token identity issued (`jwt` on the
 twin where the route has it, and each service's role check): with a stolen admin token it acts as that
-admin. Paths without `jwt` at the gateway (catalog, warehouse, order, pricing, review, Midtrans) are as open
-to it as they are on the TLS listener, minus the per-address limit. From outside the network the listener is
+admin. Paths without `jwt` at the gateway (catalog, warehouse, order, pricing, review, Midtrans, the merchant
+socket) are as open to it as they are on the TLS listener, minus the per-address limit. From outside the network the listener is
 unreachable, and a TLS request naming `kinetix-api-gateway` gets the 421. The guard passes only plaintext that
 arrived on port 8000, so publishing 8000 is the one change that would put the twins on the internet.
 
@@ -238,6 +238,22 @@ because Kong would report its own plaintext hop and matching's production endpoi
 browser's TLS request to `/bff/`. A service that keys on the last `X-Forwarded-For` entry (identity's
 `trustProxy`) sees the edge, which is why the edge calls identity directly for sign-in. `X-Request-Id` from
 the edge is kept (`correlation-id` only fills a missing one).
+
+**The merchant socket's twin (2026-10-27).** The edge proxies the seller web's WebSocket (X21) to
+`/ws/v1/matching/merchant` and `/ws/v1/matching/merchant/websocket` on this listener, so
+`matching-merchant-socket-route` is written inside `...api(...)` and gets `matching-merchant-socket-route-internal`:
+the same two paths, `strip_path` and service, no `jwt` (matching checks the token and the seller role), the
+guard first, no gate, limit or `cors`. Kong OSS passes an upgrade through any `http` or `https` route, so the
+twin needs nothing the API twins lack; the probe shows `Upgrade`, the query and `X-Forwarded-Proto: https`
+reaching the upstream. The courier socket keeps no twin: couriers use the app, which dials the TLS listener.
+The public socket routes are unchanged.
+
+**90-second timeouts on two services (2026-10-27).** The edge holds the seller web's merchant socket with 90 s
+idle timeouts, and Kong's default `read_timeout` and `write_timeout` (60 s) would close an idle socket first.
+`edge-service` (the `/bff/` routes on both app hosts) and `matching-merchant-socket` (the public route and its
+twin) set both to 90000 ms (`idleSocketTimeout`); `connect_timeout` and every other service keep Kong's
+defaults, and the invariants refuse any other value. A slow `/bff/` call or a silent merchant socket therefore
+waits up to 90 s for Kong's 504 or close, on the public merchant socket too.
 
 ## `/health` and `/.well-known/security.txt`
 
@@ -256,7 +272,17 @@ phoenix.js connects `new Socket("/ws/v1/matching/driver")` to `/ws/v1/matching/d
 route therefore takes both its bare path (the installed courier app) and `<path>/websocket`, and both reach
 matching's `/driver/websocket` or `/merchant/websocket`, the only two socket paths matching serves; the longer
 path is stripped whole, so nothing is appended. The query (`vsn`, `token`) passes through. Long polling is not
-routed.
+routed. The merchant socket's internal twin takes the same two paths.
+
+## Kong reads a token from `Authorization` only (2026-10-27)
+
+Kong's `jwt` plugin looks for a token in the query (`uri_param_names`, default `["jwt"]`), in cookies
+(`cookie_names`, default none) and in headers (`header_names`, default `authorization`). With the default,
+`…?jwt=<token>` passed Kong, and a token in a URL lands in logs, history and `Referer`. `jwtPlugin` sets both
+lists to `[]` (an empty set is valid in Kong 3.9.4's `kong/plugins/jwt/schema.lua`), so every `jwt` route and
+its twin read only `Authorization: Bearer …`. A token anywhere else is a missing token: Kong's `401
+{"message":"Unauthorized"}` with a bare `WWW-Authenticate: Bearer`, before the request leaves the gateway. The
+sockets carry no `jwt` plugin (matching reads its own `?token=`), so this does not touch them.
 
 ## Gates
 
@@ -264,10 +290,12 @@ routed.
   contradiction, refuses a render without a staff range or with an everyone range, puts the gate on nine routes,
   `/health` and `security.txt` as above; refuses a render without either browser-app host, with `:443`, or with
   a host name used twice; `test/config_invariants.jq` over a JSON render (only `correlation-id` and `prometheus`
-  global; every TLS route https-only with a rate limit; every twin plaintext-only on the internal host with the
-  guard first and no gate, limit or `cors`; the twins exactly the API routes, each with its original's paths,
-  methods, strip, service and `jwt`; the four browser-app routes as above); `deck file validate`; no upstream
-  outside the network.
+  global; every `jwt` plugin with empty `uri_param_names` and `cookie_names`; every TLS route https-only with
+  a rate limit; every twin plaintext-only on the internal host with the guard first and no gate, limit or
+  `cors`; the twins exactly the API routes and the merchant socket, each with its original's paths, methods,
+  strip, service and `jwt`; the four browser-app routes as above; `read_timeout` and `write_timeout` 90000 on
+  the edge's and the merchant socket's services only, with no `connect_timeout` anywhere); `deck file
+  validate`; no upstream outside the network.
 - CI `build-image` (GitHub): the image builds (its build step asserts the same render rules), then
   `test/edge_probe.sh <image>` runs the image against an echo upstream (the same image, `request-termination`
   with `echo`) on two Docker networks, one inside the staff range and one outside: every admin-only path reaches
@@ -277,9 +305,14 @@ routed.
   `Host` kept, the limit and no CORS; the backoffice's refuses an outside address; twenty-odd other paths answer
   404), TLS requests naming the internal host (421), and, from a third network outside the staff range, the
   plaintext listener: every API path through its twin, every `jwt` twin 401 without a token, the excluded
-  routes 426, `X-Forwarded-For` intact, a burst of 120 unlimited. Kong's own metrics then show that no twin
-  served a TLS request and that every twin served a plaintext one. GitLab's image job comes from
+  routes 426, `X-Forwarded-For` intact, a burst of 120 unlimited. On every `jwt` route and twin, a valid token
+  only in `?jwt=` or in a `jwt` cookie gets the 401 for a missing token. The merchant socket's twin passes an
+  upgrade with its query and `X-Forwarded-Proto: https`; the same path answers 421 over TLS naming the internal
+  host and 426 in plaintext naming any other, and the courier socket 426 in plaintext. Kong's own metrics then
+  show that no twin served a TLS request and that every twin served a plaintext one. GitLab's image job comes from
   `kinetix-infrastructure`'s template and does not run the probe.
 - The lab: `test/route_conformance.sh` against the running compose lab; section 5 checks that every admin-only
   route gives the same answer to the calling address and that no public route is gated. Run it from an address in
-  the lab's range and from one outside it.
+  the lab's range and from one outside it. Section 7 also upgrades both sockets in plaintext (the merchant one
+  reaches matching, the courier one gets 426); section 8 checks that a token in the query or a cookie is not
+  read.
