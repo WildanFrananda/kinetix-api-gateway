@@ -13,6 +13,8 @@ on:
 jobs:
   config-valid:
     runs-on: ubuntu-latest
+    env:
+      ONION_HOST: kinetixgatewayciabcdefghijklmnopqrstuvwxyz234567abcdefgh.onion
     steps:
       - uses: actions/checkout@v7
 
@@ -52,6 +54,7 @@ jobs:
                      -p jwtIssuer=https://identity.ci.invalid -p corsOrigins="$1" \
                      -p staffRanges=192.0.2.0/24 -p publicApiHost=api.ci.invalid \
                      -p backofficeHost=backoffice.ci.invalid:8443 -p sellerHost=seller.ci.invalid \
+                     -p backofficeOnionHost="$ONION_HOST" \
                      -f yaml config/gateway.pkl -o "$2"
           }
           # Same, with the object store's hostname supplied. Kept as a separate function rather
@@ -61,6 +64,7 @@ jobs:
                      -p jwtIssuer=https://identity.ci.invalid -p corsOrigins="" \
                      -p staffRanges=192.0.2.0/24 -p publicApiHost=api.ci.invalid \
                      -p backofficeHost=backoffice.ci.invalid:8443 -p sellerHost=seller.ci.invalid \
+                     -p backofficeOnionHost="$ONION_HOST" \
                      -p storageHost="$1" -f yaml config/gateway.pkl -o "$2"
           }
           render "https://app.ci.invalid" kong.yml
@@ -98,6 +102,7 @@ jobs:
                    -p jwtIssuer=https://identity.ci.invalid -p corsOrigins="" \
                    -p staffRanges=192.0.2.0/24 -p publicApiHost=api.ci.invalid \
                    -p backofficeHost=backoffice.ci.invalid:8443 -p sellerHost=seller.ci.invalid \
+                   -p backofficeOnionHost="$ONION_HOST" \
                    -f yaml config/gateway.pkl -o /tmp/kong-absent.yml
           echo "config renders with origins, without them, refuses a contradiction, and gates storage on its host"
 
@@ -107,7 +112,7 @@ jobs:
             pkl eval -p identityJwtPublicKey="$(cat /tmp/throwaway-public.pem)" \
                      -p jwtIssuer=https://identity.ci.invalid -p corsOrigins= \
                      -p publicApiHost=api.ci.invalid -p backofficeHost=backoffice.ci.invalid:8443 \
-                     -p sellerHost=seller.ci.invalid "$@" \
+                     -p sellerHost=seller.ci.invalid -p backofficeOnionHost="$ONION_HOST" "$@" \
                      -f yaml config/gateway.pkl -o /tmp/kong-gate.yml 2>/dev/null
           }
           if gate; then
@@ -138,16 +143,28 @@ jobs:
                      -p staffRanges=192.0.2.0/24 -p publicApiHost=api.ci.invalid "$@" \
                      -f yaml config/gateway.pkl -o /tmp/kong-hosts.yml 2>/dev/null
           }
-          if hosts -p sellerHost=seller.ci.invalid; then
+          if hosts -p sellerHost=seller.ci.invalid -p backofficeOnionHost="$ONION_HOST"; then
             echo "the config rendered without a backoffice host"; exit 1
           fi
-          if hosts -p backofficeHost=backoffice.ci.invalid; then
+          if hosts -p backofficeHost=backoffice.ci.invalid -p backofficeOnionHost="$ONION_HOST"; then
             echo "the config rendered without a seller host"; exit 1
+          fi
+          if hosts -p backofficeHost=backoffice.ci.invalid -p sellerHost=seller.ci.invalid; then
+            echo "the config rendered without the backoffice's onion address"; exit 1
+          fi
+          for onion in "" "http://$ONION_HOST" "$ONION_HOST:80" "kinetixgatewayci.onion" \
+                       "$(printf '%s' "$ONION_HOST" | tr a-z A-Z)" "backoffice.ci.invalid"; do
+            if hosts -p backofficeHost=backoffice.ci.invalid -p sellerHost=seller.ci.invalid -p backofficeOnionHost="$onion"; then
+              echo "the onion address '$onion' was accepted"; exit 1
+            fi
+          done
+          if hosts -p backofficeHost="$ONION_HOST" -p sellerHost=seller.ci.invalid -p backofficeOnionHost="$ONION_HOST"; then
+            echo "the onion address was accepted as the backoffice's TLS host too"; exit 1
           fi
           for pair in "api.ci.invalid:8443 seller.ci.invalid" "backoffice.ci.invalid seller.ci.invalid:443" \
                       "backoffice.ci.invalid backoffice.ci.invalid" "kinetix-api-gateway seller.ci.invalid"; do
             set -- $pair
-            if hosts -p backofficeHost="$1" -p sellerHost="$2"; then
+            if hosts -p backofficeHost="$1" -p sellerHost="$2" -p backofficeOnionHost="$ONION_HOST"; then
               echo "the browser-app hosts '$1' and '$2' were accepted"; exit 1
             fi
           done
@@ -155,13 +172,14 @@ jobs:
                    -p jwtIssuer=https://identity.ci.invalid -p corsOrigins="https://app.ci.invalid" \
                    -p staffRanges=192.0.2.0/24 -p publicApiHost=api.ci.invalid \
                    -p backofficeHost=backoffice.ci.invalid:8443 -p sellerHost=seller.ci.invalid \
+                   -p backofficeOnionHost="$ONION_HOST" \
                    -p storageHost=storage.ci.invalid -f json config/gateway.pkl -o /tmp/kong.json
-          broken="$(jq -r --arg backoffice backoffice.ci.invalid --arg seller seller.ci.invalid \
+          broken="$(jq -r --arg backoffice backoffice.ci.invalid --arg seller seller.ci.invalid --arg onion "$ONION_HOST" \
                          -f test/config_invariants.jq /tmp/kong.json)"
           if [ -n "$broken" ]; then
             printf '%s\n' "$broken"; exit 1
           fi
-          echo "/bff/ on the two browser-app hosts goes to the edge, the rest of the backoffice host to its app, nothing else answers there; every API route has its plaintext twin"
+          echo "/bff/ on the two browser-app hosts goes to the edge, the rest of the backoffice host to its app, nothing else answers there; the onion address has its two guarded plaintext routes; every API route has its plaintext twin"
 
       - name: Kong must accept it
         run: |

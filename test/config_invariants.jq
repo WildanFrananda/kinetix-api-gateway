@@ -1,6 +1,9 @@
 def plugin_names: [.plugins[]?.name];
 def has_plugin($name): plugin_names | any(.[]; . == $name);
 def twin: .name | endswith("-internal");
+def onion: .name | endswith("-onion-route");
+def guard_port: [.plugins[]? | select(.name == "pre-function") | .config.access[0]][0] // ""
+  | capture("get_port\\(\\) ~= (?<port>[0-9]+) ").port // null;
 def shape: {paths, methods, strip_path, service_url, jwt: has_plugin("jwt")};
 def without_twin: [
   "health-route",
@@ -25,7 +28,8 @@ def timeouts: {connect_timeout, read_timeout, write_timeout};
   ] as $all_plugins
 | ($all_plugins | map(select(.name == "jwt"))) as $jwt_plugins
 | ($routes | map(select(twin))) as $twins
-| ($routes | map(select(twin | not))) as $tls
+| ($routes | map(select(onion))) as $onions
+| ($routes | map(select((twin | not) and (onion | not)))) as $tls
 | ($tls | map(select(.name as $name | without_twin | any(.[]; . == $name) | not))) as $api
 | [
     (if [.plugins[].name] != ["correlation-id", "prometheus"]
@@ -48,6 +52,7 @@ def timeouts: {connect_timeout, read_timeout, write_timeout};
       | "\(.name) is not bound to the internal host over plaintext: \(.protocols) \(.hosts)"),
     ($twins[] | select(plugin_names[0] != "pre-function")
       | "\(.name) does not refuse TLS first: \(plugin_names)"),
+    ($twins[] | select(guard_port != "8000") | "\(.name)'s guard does not pin the internal port 8000: \(guard_port)"),
     ($twins[] | select(has_plugin("ip-restriction") or has_plugin("rate-limiting") or has_plugin("cors"))
       | "\(.name) carries a public-listener plugin: \(plugin_names)"),
     ($tls[] | select(.protocols != ["https"]) | "\(.name) answers plaintext: \(.protocols)"),
@@ -76,6 +81,22 @@ def timeouts: {connect_timeout, read_timeout, write_timeout};
       | "backoffice-app-route is not the gated app route of \($backoffice) outside /bff/: \(.)"),
     ($routes | route("seller-unrouted-route")
       | select(.hosts != [$seller] or .paths != ["/"] or (plugin_names | sort) != ["rate-limiting", "request-termination"])
-      | "seller-unrouted-route does not close \($seller) outside /bff/: \(.)")
+      | "seller-unrouted-route does not close \($seller) outside /bff/: \(.)"),
+    (if ($onions | map(.name) | sort) != ["backoffice-app-onion-route", "edge-backoffice-onion-route"]
+      then "the onion routes are \($onions | map(.name) | sort), not the backoffice's two"
+      else empty end),
+    ($onions[] | select(.protocols != ["http"] or .hosts != [$onion] or plugin_names != ["pre-function", "rate-limiting"])
+      | "\(.name) is not the guarded plaintext route of the onion host with only its limit: \(.)"),
+    ($onions[] | select(guard_port != "8081") | "\(.name)'s guard does not pin the onion port 8081: \(guard_port)"),
+    ($routes[] | select(onion | not) | select((.hosts // []) | any(.[]; . == $onion))
+      | "\(.name) names the onion host, which only the onion routes may"),
+    ($routes | route("edge-backoffice-onion-route")
+      | select(.paths != ["/bff/"] or .methods != null or .strip_path != false or .preserve_host != true
+          or .service_url != "http://kinetix-edge-service:8080")
+      | "edge-backoffice-onion-route is not the onion's /bff/ route to the edge: \(.)"),
+    ($routes | route("backoffice-app-onion-route")
+      | select(.paths != ["/"] or .methods != null or .strip_path != false or .preserve_host == true
+          or .service_url != "http://kinetix-backoffice:8080")
+      | "backoffice-app-onion-route is not the onion's app route outside /bff/: \(.)")
   ]
 | .[]

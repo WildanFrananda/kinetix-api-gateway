@@ -311,5 +311,52 @@ for where in "query" "cookie"; do
 done
 
 echo
+echo "── 9. The onion listener: the backoffice on its onion address, plaintext from the network, never published"
+onion="$(docker exec "$GW" printenv KINETIX_BACKOFFICE_ONION_HOST 2>/dev/null || true)"
+if [ -z "$onion" ]; then
+  bad "KINETIX_BACKOFFICE_ONION_HOST is not set on the gateway"
+else
+  if [ -z "$(docker port "$GW" 8081 2>/dev/null)" ]; then
+    ok "port 8081 is not published"
+  else
+    bad "port 8081 is published: $(docker port "$GW" 8081)"
+  fi
+  on_listener() {
+    docker run --rm --network "$network" alpine:3.22.2@sha256:4b7ce07002c69e8f3d704a9c5d6fd3053be500b7f1c69fc0d80990c2ad8dd412 \
+      wget -S -O - --header "Host: $onion" "http://kinetix-api-gateway:$1$2" 2>&1
+  }
+  status_of() {
+    awk '/^  HTTP\// { code=$2 } END { print code }'
+  }
+  answer="$(on_listener 8081 /api/v1/products)"
+  if [ "$(printf '%s\n' "$answer" | status_of)" = 200 ] && printf '%s' "$answer" | grep -qF '<title>Kinetix Backoffice</title>'; then
+    ok "the onion address /api/v1/products on 8081 -> the backoffice app's page: no API route answers there"
+  else
+    bad "the onion address /api/v1/products on 8081 -> $(printf '%s\n' "$answer" | status_of) (wanted the backoffice app; is it running?)"
+  fi
+  answer="$(on_listener 8081 /bff/session)"
+  code="$(printf '%s\n' "$answer" | status_of)"
+  if [ -z "$code" ] || [ "$code" = 502 ] || [ "$code" = 503 ] || [ "$code" = 504 ]; then
+    bad "the onion address /bff/session on 8081 -> '$code': the edge is not reachable"
+  elif printf '%s' "$answer" | grep -qE 'no Route matched|Misdirected Request'; then
+    bad "the onion address /bff/session on 8081 -> $code from Kong, not the edge"
+  else
+    ok "the onion address /bff/session on 8081 -> $code from the edge"
+  fi
+  code="$(on_listener 8000 /bff/session | status_of)"
+  if [ "$code" = 421 ]; then
+    ok "the onion address on the internal listener 8000 -> 421 from the onion routes' guard"
+  else
+    bad "the onion address on the internal listener 8000 -> '$code' (wanted 421)"
+  fi
+  code="$("${CURL[@]}" -s -o /dev/null -w '%{http_code}' --max-time 10 -H "Host: $onion" "$BASE/bff/session")"
+  if [ "$code" = 421 ]; then
+    ok "TLS naming the onion address -> 421: the onion routes never answer the public listener"
+  else
+    bad "TLS naming the onion address -> $code (wanted 421)"
+  fi
+fi
+
+echo
 printf '%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

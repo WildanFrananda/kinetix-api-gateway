@@ -15,7 +15,8 @@ and differ only in these values, all required unless marked:
 | `KINETIX_GATEWAY_CORS_ORIGINS` | `corsOrigins` | must be set; empty leaves the `cors` plugin out |
 | `KINETIX_GATEWAY_STAFF_RANGES` | `staffRanges` | comma-separated addresses or CIDRs the admin-only routes accept |
 | `KINETIX_PUBLIC_API_HOST` | `publicApiHost` | the host this gateway serves (`host` or `host:port`), named by `security.txt` |
-| `KINETIX_BACKOFFICE_HOST` | `backofficeHost` | the backoffice's host (`host`, or `host:port` in the lab), whose `/bff/` goes to the edge |
+| `KINETIX_BACKOFFICE_HOST` | `backofficeHost` | the backoffice's staff-gated TLS host (`host`, or `host:port` in the lab), whose `/bff/` goes to the edge; in production the server's tunnel address, the WireGuard fallback |
+| `KINETIX_BACKOFFICE_ONION_HOST` | `backofficeOnionHost` | the backoffice's onion address (56 base32 characters and `.onion`), served on the onion listener only |
 | `KINETIX_SELLER_HOST` | `sellerHost` | the seller web app's host, the same way |
 | `KINETIX_STORAGE_HOST` (optional) | `storageHost` | the object store's host; empty renders no storage route |
 
@@ -26,11 +27,12 @@ typo cannot open the gate to everyone; Kong's own schema refuses at start what t
 through. The values live in `kinetix-infrastructure` (lab compose; production's
 `deploy/prod/platform.env`, through `compose.prod.yaml`), not in this public repository.
 
-The two browser-app hosts work the same way: no default, the entrypoint refuses to start without either, and
-the build step and both CIs assert that a render without one fails. Pkl also refuses a `:443` suffix (the
-browser's `Host` carries no port there, and the edge's origin would be wrong), and a backoffice, seller,
+The browser-app hosts work the same way: no default, the entrypoint refuses to start without any of the three,
+and the build step and both CIs assert that a render without one fails. Pkl also refuses a `:443` suffix (the
+browser's `Host` carries no port there, and the edge's origin would be wrong), an onion address that is not
+exactly 56 lowercase base32 characters and `.onion` (no scheme, no port), and a backoffice, onion, seller,
 public API, storage or internal host name used twice: two of them on one name would let one host's routes
-shadow the other's.
+shadow the other's. That refusal prints every host but the onion address, which stays out of logs.
 
 ## Admin-only routes answer only the staff network
 
@@ -193,8 +195,8 @@ remain global.
 ## The internal listener and the twins
 
 The edge calls the API through the gateway (§10, "The gateway's internal listener"), at
-`http://kinetix-api-gateway:8000`. `KONG_PROXY_LISTEN` is `0.0.0.0:8443 ssl, 0.0.0.0:8000`: 8000 is plaintext
-and must never be published. The `kong` base image already declares `EXPOSE 8000` (with 8001, 8443 and 8444),
+`http://kinetix-api-gateway:8000`. `KONG_PROXY_LISTEN` is `0.0.0.0:8443 ssl, 0.0.0.0:8000, 0.0.0.0:8081`: 8000 is
+plaintext and must never be published (8081 is the onion listener, below). The `kong` base image already declares `EXPOSE 8000` (with 8001, 8443 and 8444),
 which a Dockerfile cannot undo, so `docker run -P` would publish it: publish ports explicitly, as infra's compose
 does (8443 only). Every API route is written once, inside `...api(...)`, and Pkl renders it twice:
 the route the TLS listener serves (`protocols = ["https"]`, with its staff gate, rate limit and `cors`), and
@@ -260,6 +262,47 @@ twin) set both to 90000 ms (`idleSocketTimeout`); `connect_timeout` and every ot
 defaults, and the invariants refuse any other value. A slow `/bff/` call or a silent merchant socket therefore
 waits up to 90 s for Kong's 504 or close, on the public merchant socket too.
 
+## The onion listener (2026-10-28)
+
+Infra `docs/BACKOFFICE.md` §10 (BO-D8 to BO-D10) is the design: the backoffice leaves the public internet and
+is reached as a Tor v3 onion service with client authorization, with the WireGuard tunnel as the fallback. The
+`tor` container runs the onion service and forwards it, in plaintext, to `http://kinetix-api-gateway:8081`.
+`KONG_PROXY_LISTEN` is `0.0.0.0:8443 ssl, 0.0.0.0:8000, 0.0.0.0:8081`; 8081, like 8000, is never published (the
+base image does not `EXPOSE` it).
+
+Two routes, both `hosts = [KINETIX_BACKOFFICE_ONION_HOST]`, `protocols = ["http"]`, written by `onOnionListener`:
+
+| Route | Path | Service |
+| :--- | :--- | :--- |
+| `edge-backoffice-onion-route` | `/bff/` (`strip_path = false`, `preserve_host = true`) | `edge-service`, the same service and 90 s timeouts as the backoffice host's `/bff/` |
+| `backoffice-app-onion-route` | `/` (`strip_path = false`, `Host` not kept) | `backoffice-app` |
+
+- **The guard.** Each starts with `pre-function` code (`onionListenerOnly`) that answers `421 {"message":"Misdirected
+  Request"}` unless the request arrived in plaintext on port 8081, for the reason the twins have one: Kong 3.9 does
+  not match on `protocols`, so without it a TLS request naming the onion address on 8443, or a plaintext one on
+  8000, would reach the backoffice. The twins' guard pins 8000 the same way, so a twin never answers on 8081.
+  The guard does not touch `X-Forwarded-Proto`: the edge picks the backoffice's onion face by its host and checks
+  the browser's `Origin` (`http://<onion address>`) against it.
+- **Why the onion routes win on 8081.** Host + path beats every host-less API route, as on the backoffice host,
+  so `/api/...` on the onion address is the app's answer, never the API. Any other `Host` on 8081 matches only TLS
+  routes (Kong's 426) or a twin (its guard's 421): the listener exposes the backoffice and nothing else.
+- **No staff gate, and one rate-limit bucket.** Kong's TCP peer on 8081 is always the `tor` container, so an
+  address gate would see only it. Tor's client authorization is the gate: without the client key a browser cannot
+  even fetch the onion service's descriptor. `perAddressLimit` stays on both routes (Kong keys it by route), but
+  every onion visitor shares tor's address, so it is the face's whole budget of 100 a minute per route, not a
+  per-person one. The edge and identity see tor's address too, so identity's per-address sign-in throttle is one
+  bucket for the onion face.
+- **The onion address in logs.** Kong's access log carries no host. The address is in the rendered `kong.yml` inside
+  the container, and Pkl's duplicate-host refusal masks it.
+- **Who can reach 8081.** Any container on the `kinetix` network, as with 8000. Such a container already reaches
+  `kinetix-edge-service:8080` and `kinetix-backoffice:8080` directly, so the listener gives it nothing new; the
+  edge's own checks (the origin, an admin's sign-in with a second factor) still apply.
+
+`KINETIX_BACKOFFICE_HOST` keeps its staff-gated TLS routes. In production it is the server's tunnel address, the
+fallback when Tor is down: a browser on the WireGuard tunnel opens `https://<tunnel address>/`, accepts the
+certificate warning (the certificate names the public hosts, not the address), and the staff gate admits the
+tunnel's range.
+
 ## `/health` and `/.well-known/security.txt`
 
 `/health` answers `{"status":"ok"}` and nothing else (hardening item 6: it named the engine). Both routes are
@@ -293,12 +336,15 @@ sockets carry no `jwt` plugin (matching reads its own `?token=`), so this does n
 
 - CI `config-valid` (GitHub and GitLab, paired): Pkl renders with and without origins and storage, refuses a
   contradiction, refuses a render without a staff range or with an everyone range, puts the gate on ten routes (the nine above and the backoffice app),
-  `/health` and `security.txt` as above; refuses a render without either browser-app host, with `:443`, or with
-  a host name used twice; `test/config_invariants.jq` over a JSON render (only `correlation-id` and `prometheus`
+  `/health` and `security.txt` as above; refuses a render without any of the three browser-app hosts, with `:443`,
+  with an onion address that is not one (a scheme, a port, capitals, a v2 length, a DNS name), or with a host
+  name used twice (the onion address as the backoffice's TLS host included); `test/config_invariants.jq` over a JSON render (only `correlation-id` and `prometheus`
   global; every `jwt` plugin with empty `uri_param_names` and `cookie_names`; every TLS route https-only with
   a rate limit; every twin plaintext-only on the internal host with the guard first and no gate, limit or
   `cors`; the twins exactly the API routes and the merchant socket, each with its original's paths, methods,
-  strip, service and `jwt`; the four browser-app routes as above; `read_timeout` and `write_timeout` 90000 on
+  strip, service and `jwt`; each twin's guard pinning port 8000; the four browser-app routes as above; exactly
+  the two onion routes, plaintext on the onion host with the guard pinning port 8081 and the limit as their only
+  plugins, `/bff/` to the edge with `Host` kept and `/` to the app, and no other route naming the onion host; `read_timeout` and `write_timeout` 90000 on
   the edge's and the merchant socket's services only, with no `connect_timeout` anywhere); `deck file
   validate`; no upstream outside the network.
 - CI `build-image` (GitHub): the image builds (its build step asserts the same render rules), then
@@ -308,16 +354,22 @@ sockets carry no `jwt` plugin (matching reads its own `?token=`), so this does n
   every public path reaches the same upstream path from both, and `/health`, `security.txt`, the socket paths and a
   CORS preflight answer as above. It also runs the browser-app hosts (`/bff/` reaches the edge's port with
   `Host` kept, the limit and no CORS; the backoffice's refuses an outside address; twenty-odd other paths answer
-  404 on the seller host and reach `kinetix-backoffice:8080` on the backoffice host, or its 403 from outside), TLS requests naming the internal host (421), and, from a third network outside the staff range, the
+  404 on the seller host and reach `kinetix-backoffice:8080` on the backoffice host, or its 403 from outside), TLS requests naming the internal host or the onion address (421), and, from a third network outside the staff range, the
   plaintext listener: every API path through its twin, every `jwt` twin 401 without a token, the excluded
   routes 426, `X-Forwarded-For` intact, a burst of 120 unlimited. On every `jwt` route and twin, a valid token
   only in `?jwt=` or in a `jwt` cookie gets the 401 for a missing token. The merchant socket's twin passes an
   upgrade with its query and `X-Forwarded-Proto: https`; the same path answers 421 over TLS naming the internal
-  host and 426 in plaintext naming any other, and the courier socket 426 in plaintext. Kong's own metrics then
-  show that no twin served a TLS request and that every twin served a plaintext one. GitLab's image job comes from
+  host and 426 in plaintext naming any other, and the courier socket 426 in plaintext. The onion listener, from
+  that network: `/bff/` reaches the edge with the onion `Host` kept, the limit, no CORS and no gate; every other
+  path (API paths, `..` spellings and `/bff` without its slash included) reaches the app; the address in capitals
+  reaches neither; on 8081 the API, backoffice and seller hosts get 426 and the internal host 421; on 8000 the onion
+  address gets 421. The entrypoint refuses to start without the onion address or with one that is not one. Kong's
+  own metrics then show that no twin and no onion route served a TLS request, that every twin served a plaintext
+  one, and that both onion routes served the onion listener. GitLab's image job comes from
   `kinetix-infrastructure`'s template and does not run the probe.
 - The lab: `test/route_conformance.sh` against the running compose lab; section 5 checks that every admin-only
   route gives the same answer to the calling address and that no public route is gated. Run it from an address in
   the lab's range and from one outside it. Section 7 also upgrades both sockets in plaintext (the merchant one
   reaches matching, the courier one gets 426); section 8 checks that a token in the query or a cookie is not
-  read.
+  read; section 9 checks the onion listener from the lab network (8081 unpublished, the app and the edge on the
+  onion address, 421 for that address on 8000 and over TLS), without printing the address.

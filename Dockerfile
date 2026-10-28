@@ -27,6 +27,7 @@ RUN set -eu; \
              -p publicApiHost=api.build.invalid \
              -p backofficeHost=backoffice.build.invalid \
              -p sellerHost=seller.build.invalid \
+             -p backofficeOnionHost=kinetixgatewaybuildabcdefghijklmnopqrstuvwxyz234567abcde.onion \
              -f yaml gateway.pkl -o /tmp/kong.yml; \
     if ! grep -q "rsa_public_key" /tmp/kong.yml; then \
       echo "the rendered config carries no verification key"; exit 1; \
@@ -35,9 +36,10 @@ RUN set -eu; \
       echo "the rendered config carries no staff gate"; exit 1; \
     fi; \
     twins="$(grep -c -- '-internal$' /tmp/kong.yml)"; \
+    onions="$(grep -c -- '-onion-route$' /tmp/kong.yml)"; \
     guards="$(grep -c 'name: pre-function' /tmp/kong.yml)"; \
-    if [ "$twins" -eq 0 ] || [ "$twins" != "$guards" ]; then \
-      echo "$twins internal twins and $guards plaintext guards"; exit 1; \
+    if [ "$twins" -eq 0 ] || [ "$onions" != 2 ] || [ "$((twins + onions))" != "$guards" ]; then \
+      echo "$twins internal twins, $onions onion routes and $guards listener guards"; exit 1; \
     fi; \
     refuses() { \
       if pkl eval -p identityJwtPublicKey="$(cat /tmp/throwaway-public.pem)" \
@@ -49,9 +51,11 @@ RUN set -eu; \
         echo "the config rendered with only $*"; exit 1; \
       fi; \
     }; \
-    refuses -p backofficeHost=backoffice.build.invalid -p sellerHost=seller.build.invalid; \
-    refuses -p staffRanges=192.0.2.0/24 -p sellerHost=seller.build.invalid; \
-    refuses -p staffRanges=192.0.2.0/24 -p backofficeHost=backoffice.build.invalid; \
+    onion=kinetixgatewaybuildabcdefghijklmnopqrstuvwxyz234567abcde.onion; \
+    refuses -p backofficeHost=backoffice.build.invalid -p sellerHost=seller.build.invalid -p backofficeOnionHost="$onion"; \
+    refuses -p staffRanges=192.0.2.0/24 -p sellerHost=seller.build.invalid -p backofficeOnionHost="$onion"; \
+    refuses -p staffRanges=192.0.2.0/24 -p backofficeHost=backoffice.build.invalid -p backofficeOnionHost="$onion"; \
+    refuses -p staffRanges=192.0.2.0/24 -p backofficeHost=backoffice.build.invalid -p sellerHost=seller.build.invalid; \
     rm -f /tmp/throwaway.pem /tmp/throwaway-public.pem /tmp/kong.yml /tmp/kong-without.yml
 
 # Pin the Kong minor rather than `latest`: the gateway is the platform's only published
@@ -82,7 +86,7 @@ ENV KONG_PROXY_ACCESS_LOG="logs/access.log kinetix"
 
 # The certificate and key are placed by bin/entrypoint.sh from files or from the environment; they
 # are not in this image.
-ENV KONG_PROXY_LISTEN="0.0.0.0:8443 ssl, 0.0.0.0:8000"
+ENV KONG_PROXY_LISTEN="0.0.0.0:8443 ssl, 0.0.0.0:8000, 0.0.0.0:8081"
 
 EXPOSE 8443
 

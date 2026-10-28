@@ -137,9 +137,9 @@ misdirected_answer() {
   if [ "$status" = 421 ] \
     && [ "$(message)" = "Misdirected Request" ] \
     && [ "$(jq -r 'has("request")' /tmp/body 2>/dev/null)" = false ]; then
-    ok "TLS $1 $2 naming the internal host -> 421 from the twin's guard, never proxied"
+    ok "$SCHEME:$PORT $1 $2 naming ${3:-the internal host} -> 421 from its listener's guard, never proxied"
   else
-    bad "TLS $1 $2 naming the internal host -> $status $(head -c 200 /tmp/body) (wanted 421)"
+    bad "$SCHEME:$PORT $1 $2 naming ${3:-the internal host} -> $status $(head -c 200 /tmp/body) (wanted 421)"
   fi
 }
 
@@ -524,6 +524,13 @@ misdirected_twins() {
   upgrade /ws/v1/matching/merchant -H "Host: $INTERNAL_HOST:8000"
   misdirected_answer GET /ws/v1/matching/merchant
 
+  call GET / none -H "Host: $ONION_NAME"
+  misdirected_answer GET / "the onion address"
+  call GET /bff/session none -H "Host: $ONION_NAME"
+  misdirected_answer GET /bff/session "the onion address"
+  call POST /bff/login none -H "Host: $ONION_NAME" -H "Content-Type: application/json" -d '{}'
+  misdirected_answer POST /bff/login "the onion address"
+
   call POST /api/v1/orders/ORD-1/complete none -H "Host: KINETIX-API-GATEWAY"
   if [ "$status" = 421 ] || { [ "$status" = 403 ] && [ "$SIDE" != staff ]; } || { [ "$status" = 200 ] && [ "$SIDE" = staff ] && listener_matches; }; then
     ok "TLS naming the internal host in capitals -> $status: a twin's guard or the TLS route, never a twin's upstream"
@@ -626,17 +633,97 @@ plaintext_twins() {
   fi
 }
 
+reaches_onion_edge() {
+  method="$1"
+  path="$2"
+  shift 2
+  call "$method" "$path" none -H "Host: $ONION_NAME" "$@"
+  got="$(jq -r '"\(.request.port) \(.request.method) \(.request.path) \(.request.headers.host)"' /tmp/body 2>/dev/null)"
+  want="8080 $method $path $ONION_NAME"
+  if [ "$status" = 200 ] \
+    && [ "$got" = "$want" ] \
+    && [ "$(header x-ratelimit-limit-minute)" = 100 ] \
+    && [ -z "$(header access-control-allow-origin)" ]; then
+    ok "onion $method $path -> the edge :8080 with the onion Host kept, the per-address limit, no CORS, no staff gate"
+  else
+    bad "onion $method $path -> $status '$got' limit '$(header x-ratelimit-limit-minute)' acao '$(header access-control-allow-origin)' (wanted '$want')"
+  fi
+}
+
+onion_face() {
+  target http onion-listener.probe.invalid 8081
+  reaches_onion_edge GET /bff/session
+  reaches_onion_edge POST /bff/login -H "Content-Type: application/json" -d '{}'
+  reaches_onion_edge POST /bff/2fa/verify -H "Origin: http://$ONION_NAME"
+  reaches_onion_edge GET /bff/api/v1/orders/ORD-1
+  reaches_onion_edge DELETE /bff/api/v1/notifications/devices
+
+  call GET /bff/session token -H "Host: $ONION_NAME"
+  if [ "$status" = 200 ] && [ "$(jq -r '.request.headers.authorization' /tmp/body)" = "Bearer $TOKEN" ]; then
+    ok "onion /bff/ carries no jwt plugin: the edge decides (a bearer passes through untouched)"
+  else
+    bad "onion /bff/session with a bearer -> $status"
+  fi
+
+  unrouted_table > /tmp/unrouted_table
+  while read -r method path auth; do
+    [ -z "$method" ] && continue
+    reaches_app "$method" "$path" "$auth" -H "Host: $ONION_NAME"
+  done < /tmp/unrouted_table
+
+  call GET /assets/index.js none -H "Host: $ONION_NAME"
+  if [ "$status" = 200 ] && [ "$(header x-ratelimit-limit-minute)" = 100 ]; then
+    ok "onion app route carries its own per-address limit"
+  else
+    bad "onion /assets/index.js -> $status limit '$(header x-ratelimit-limit-minute)'"
+  fi
+
+  upper="$(printf '%s' "$ONION_NAME" | tr '[:lower:]' '[:upper:]')"
+  call GET /bff/session none -H "Host: $upper"
+  if [ "$status" != 200 ] && [ "$(jq -r 'has("request")' /tmp/body 2>/dev/null)" != true ]; then
+    ok "the onion address in capitals on the onion listener -> $status, neither the edge nor the app"
+  else
+    bad "the onion address in capitals on the onion listener reached an upstream: $(head -c 200 /tmp/body)"
+  fi
+
+  target http "$API_HOST" 8081
+  needs_tls GET /api/v1/products none
+  needs_tls POST /api/v1/orders/ORD-1/complete none
+  target http "$BACKOFFICE_NAME" 8081
+  needs_tls GET /bff/session none
+  needs_tls GET / none
+  target http "$SELLER_NAME" 8081
+  needs_tls GET /bff/session none
+
+  target http "$INTERNAL_HOST" 8081
+  misdirected GET /api/v1/products none
+  misdirected GET /api/v1/sellers/applications token
+
+  target http "$INTERNAL_HOST" 8000
+  call GET /bff/session none -H "Host: $ONION_NAME"
+  misdirected_answer GET /bff/session "the onion address"
+  call GET / none -H "Host: $ONION_NAME"
+  misdirected_answer GET / "the onion address"
+}
+
 metrics_after() {
   curl -sS --max-time 10 "http://$GATEWAY_ADDRESS:8100/metrics" | grep '^kong_http_requests_total{' > /tmp/metrics
   twins_served="$(grep 'route="[^"]*-internal"' /tmp/metrics | grep -v 'code="421"' | wc -l | tr -d ' ')"
   twins_refused="$(grep 'route="[^"]*-internal"' /tmp/metrics | grep -c 'code="421"')"
   public_served="$(grep -v 'route="[^"]*-internal"' /tmp/metrics | grep -c 'code="200"')"
+  onion_served="$(grep 'route="[^"]*-onion-route"' /tmp/metrics | grep -v 'code="421"' | wc -l | tr -d ' ')"
+  onion_refused="$(grep 'route="[^"]*-onion-route"' /tmp/metrics | grep -c 'code="421"')"
   case "$1" in
     tls)
       if [ "$twins_served" = 0 ] && [ "$twins_refused" -gt 0 ] && [ "$public_served" -gt 0 ]; then
         ok "after every TLS group: $public_served TLS route series served, no twin served anything, $twins_refused twin series only refused 421"
       else
         bad "after the TLS groups the twins served $twins_served series: $(grep 'route="[^"]*-internal"' /tmp/metrics | grep -v 'code="421"' | head -n 3)"
+      fi
+      if [ "$onion_served" = 0 ] && [ "$onion_refused" -gt 0 ]; then
+        ok "after every TLS group: no onion route served anything, $onion_refused onion series only refused 421"
+      else
+        bad "after the TLS groups the onion routes served $onion_served series: $(grep 'route="[^"]*-onion-route"' /tmp/metrics | grep -v 'code="421"' | head -n 3)"
       fi ;;
     plaintext)
       served="$(grep 'route="[^"]*-internal"' /tmp/metrics | grep 'code="200"' | sed 's/.*route="\([^"]*\)".*/\1/' | sort -u | wc -l | tr -d ' ')"
@@ -644,6 +731,12 @@ metrics_after() {
         ok "every one of the $EXPECTED_TWINS twins served the plaintext listener"
       else
         bad "$served of $EXPECTED_TWINS twins served a plaintext request"
+      fi
+      onions="$(grep 'route="[^"]*-onion-route"' /tmp/metrics | grep 'code="200"' | sed 's/.*route="\([^"]*\)".*/\1/' | sort -u | tr '\n' ' ')"
+      if [ "$onions" = "backoffice-app-onion-route edge-backoffice-onion-route " ]; then
+        ok "both onion routes served the onion listener"
+      else
+        bad "the onion routes that served the onion listener: '$onions'"
       fi ;;
   esac
 }
@@ -672,6 +765,7 @@ case "$GROUP" in
   browser) browser_apps ;;
   misdirected) misdirected_twins ;;
   plaintext) plaintext_twins ;;
+  onion) onion_face ;;
   metrics-tls) metrics_after tls ;;
   metrics-plaintext) metrics_after plaintext ;;
   *) echo "unknown group $GROUP"; exit 2 ;;
