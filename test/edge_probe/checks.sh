@@ -214,6 +214,7 @@ POST /api/v1/sellers/7/verify token 5000 /api/v1/sellers/7/verify
 POST /api/v1/sellers/7/reject token 5000 /api/v1/sellers/7/reject
 GET /api/v1/couriers/applications token 5000 /api/v1/couriers/applications
 POST /api/v1/couriers/0b0e7f6e-1b7a-4c5e-9c1e-1f2a3b4c5d6e/approve token 5000 /api/v1/couriers/0b0e7f6e-1b7a-4c5e-9c1e-1f2a3b4c5d6e/approve
+POST /api/v1/couriers/0b0e7f6e-1b7a-4c5e-9c1e-1f2a3b4c5d6e/reject token 5000 /api/v1/couriers/0b0e7f6e-1b7a-4c5e-9c1e-1f2a3b4c5d6e/reject
 POST /api/v1/couriers/register/approve token 5000 /api/v1/couriers/register/approve
 POST /api/v1/sellers//7/verify token 5000 /api/v1/sellers/7/verify
 POST /api/v1/categories none 8000 /api/categories
