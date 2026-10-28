@@ -44,6 +44,10 @@ if [ -z "${KINETIX_SELLER_HOST:-}" ]; then
   echo "KINETIX_SELLER_HOST is required: the seller web app's host, whose /bff/ goes to the edge." >&2
   exit 1
 fi
+if [ -z "${KINETIX_BACKOFFICE_ONION_HOST:-}" ]; then
+  echo "KINETIX_BACKOFFICE_ONION_HOST is required: the backoffice's onion address, served on the onion listener." >&2
+  exit 1
+fi
 
 CONFIG="${KONG_DECLARATIVE_CONFIG:-/usr/local/kong/declarative/kong.yml}"
 umask 077
@@ -64,6 +68,7 @@ pkl eval \
   -p publicApiHost="$KINETIX_PUBLIC_API_HOST" \
   -p backofficeHost="$KINETIX_BACKOFFICE_HOST" \
   -p sellerHost="$KINETIX_SELLER_HOST" \
+  -p backofficeOnionHost="$KINETIX_BACKOFFICE_ONION_HOST" \
   -f yaml /usr/local/kong/kinetix/gateway.pkl -o "$CONFIG"
 rm -f "$public_key"
 
@@ -78,9 +83,10 @@ if ! grep -q "name: ip-restriction" "$CONFIG"; then
   exit 1
 fi
 twins="$(grep -c -- "-internal$" "$CONFIG" || true)"
+onions="$(grep -c -- "-onion-route$" "$CONFIG" || true)"
 guards="$(grep -c "name: pre-function" "$CONFIG" || true)"
-if [ "$twins" -eq 0 ] || [ "$twins" != "$guards" ]; then
-  echo "the rendered config has $twins internal twins and $guards plaintext guards" >&2
+if [ "$twins" -eq 0 ] || [ "$onions" != 2 ] || [ "$((twins + onions))" != "$guards" ]; then
+  echo "the rendered config has $twins internal twins, $onions onion routes and $guards listener guards" >&2
   exit 1
 fi
 export KONG_DECLARATIVE_CONFIG="$CONFIG"

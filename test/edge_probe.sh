@@ -10,6 +10,7 @@ INTERNAL_PREFIX="${EDGE_PROBE_INTERNAL_PREFIX:-10.231.40}"
 API_HOST="api.probe.invalid"
 BACKOFFICE_NAME="backoffice.probe.invalid"
 SELLER_NAME="seller.probe.invalid"
+ONION_NAME="kinetixgatewayprobeabcdefghijklmnopqrstuvwxyz234567abcde.onion"
 STORAGE_HOST="storage.probe.invalid"
 INTERNAL_HOST="kinetix-api-gateway"
 ISSUER="https://identity.probe.invalid"
@@ -98,29 +99,46 @@ echo "── the gateway fails fast without its staff range and its hosts"
 refuses_to_start "without a staff range" "KINETIX_GATEWAY_STAFF_RANGES is required" \
   -e KINETIX_PUBLIC_API_HOST="$API_HOST" \
   -e KINETIX_BACKOFFICE_HOST="$BACKOFFICE_NAME:8443" \
-  -e KINETIX_SELLER_HOST="$SELLER_NAME"
+  -e KINETIX_SELLER_HOST="$SELLER_NAME" \
+  -e KINETIX_BACKOFFICE_ONION_HOST="$ONION_NAME"
 refuses_to_start "with a staff range of everyone" "Type constraint" \
   -e KINETIX_GATEWAY_STAFF_RANGES=0.0.0.0/0 \
   -e KINETIX_PUBLIC_API_HOST="$API_HOST" \
   -e KINETIX_BACKOFFICE_HOST="$BACKOFFICE_NAME:8443" \
-  -e KINETIX_SELLER_HOST="$SELLER_NAME"
+  -e KINETIX_SELLER_HOST="$SELLER_NAME" \
+  -e KINETIX_BACKOFFICE_ONION_HOST="$ONION_NAME"
 refuses_to_start "without its public host" "KINETIX_PUBLIC_API_HOST is required" \
   -e KINETIX_GATEWAY_STAFF_RANGES="$STAFF_PREFIX.0/24" \
   -e KINETIX_BACKOFFICE_HOST="$BACKOFFICE_NAME:8443" \
-  -e KINETIX_SELLER_HOST="$SELLER_NAME"
+  -e KINETIX_SELLER_HOST="$SELLER_NAME" \
+  -e KINETIX_BACKOFFICE_ONION_HOST="$ONION_NAME"
 refuses_to_start "without the backoffice host" "KINETIX_BACKOFFICE_HOST is required" \
   -e KINETIX_GATEWAY_STAFF_RANGES="$STAFF_PREFIX.0/24" \
   -e KINETIX_PUBLIC_API_HOST="$API_HOST" \
-  -e KINETIX_SELLER_HOST="$SELLER_NAME"
+  -e KINETIX_SELLER_HOST="$SELLER_NAME" \
+  -e KINETIX_BACKOFFICE_ONION_HOST="$ONION_NAME"
 refuses_to_start "without the seller host" "KINETIX_SELLER_HOST is required" \
   -e KINETIX_GATEWAY_STAFF_RANGES="$STAFF_PREFIX.0/24" \
   -e KINETIX_PUBLIC_API_HOST="$API_HOST" \
-  -e KINETIX_BACKOFFICE_HOST="$BACKOFFICE_NAME:8443"
+  -e KINETIX_BACKOFFICE_HOST="$BACKOFFICE_NAME:8443" \
+  -e KINETIX_BACKOFFICE_ONION_HOST="$ONION_NAME"
 refuses_to_start "with the backoffice on the API's host" "must all differ" \
   -e KINETIX_GATEWAY_STAFF_RANGES="$STAFF_PREFIX.0/24" \
   -e KINETIX_PUBLIC_API_HOST="$API_HOST" \
   -e KINETIX_BACKOFFICE_HOST="$API_HOST:8443" \
+  -e KINETIX_SELLER_HOST="$SELLER_NAME" \
+  -e KINETIX_BACKOFFICE_ONION_HOST="$ONION_NAME"
+refuses_to_start "without the onion address" "KINETIX_BACKOFFICE_ONION_HOST is required" \
+  -e KINETIX_GATEWAY_STAFF_RANGES="$STAFF_PREFIX.0/24" \
+  -e KINETIX_PUBLIC_API_HOST="$API_HOST" \
+  -e KINETIX_BACKOFFICE_HOST="$BACKOFFICE_NAME:8443" \
   -e KINETIX_SELLER_HOST="$SELLER_NAME"
+refuses_to_start "with an onion address that is not one" "Type constraint" \
+  -e KINETIX_GATEWAY_STAFF_RANGES="$STAFF_PREFIX.0/24" \
+  -e KINETIX_PUBLIC_API_HOST="$API_HOST" \
+  -e KINETIX_BACKOFFICE_HOST="$BACKOFFICE_NAME:8443" \
+  -e KINETIX_SELLER_HOST="$SELLER_NAME" \
+  -e KINETIX_BACKOFFICE_ONION_HOST="http://$ONION_NAME"
 
 docker network create --subnet "$STAFF_PREFIX.0/24" "$RUN-staff" >/dev/null
 docker network create --subnet "$OUTSIDE_PREFIX.0/24" "$RUN-outside" >/dev/null
@@ -154,6 +172,7 @@ docker run -d --name "$RUN-gateway" \
   -e KINETIX_PUBLIC_API_HOST="$API_HOST" \
   -e KINETIX_BACKOFFICE_HOST="$BACKOFFICE_NAME:8443" \
   -e KINETIX_SELLER_HOST="$SELLER_NAME" \
+  -e KINETIX_BACKOFFICE_ONION_HOST="$ONION_NAME" \
   -e KINETIX_STORAGE_HOST="$STORAGE_HOST" \
   -e KINETIX_GATEWAY_TLS_CERT_B64="$tls_cert" \
   -e KINETIX_GATEWAY_TLS_KEY_B64="$tls_key" \
@@ -182,6 +201,7 @@ run_checks() {
     -e PUBLIC_API_HOST="$API_HOST" \
     -e BACKOFFICE_NAME="$BACKOFFICE_NAME" \
     -e SELLER_NAME="$SELLER_NAME" \
+    -e ONION_NAME="$ONION_NAME" \
     -e STORAGE_HOST="$STORAGE_HOST" \
     -e INTERNAL_HOST="$INTERNAL_HOST" \
     -e GATEWAY_ADDRESS="$prefix.10" \
@@ -229,7 +249,10 @@ probe staff metrics-tls 26
 echo "── plaintext, from the internal network: the $expected_twins internal twins"
 probe internal plaintext 22
 
-echo "── which routes answered the plaintext listener"
+echo "── the onion listener, from the internal network (outside the staff range, as the tor container is)"
+probe internal onion 27
+
+echo "── which routes answered the plaintext and onion listeners"
 probe staff metrics-plaintext 26
 
 if [ "$failures" -ne 0 ]; then

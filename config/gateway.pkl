@@ -21,21 +21,33 @@ hidden publicApiHost: String(matches(Regex(hostPattern))) = read("prop:publicApi
 
 hidden backofficeHostProp: String(matches(Regex(hostPattern)), !endsWith(":443")) = read("prop:backofficeHost")
 hidden sellerHostProp: String(matches(Regex(hostPattern)), !endsWith(":443")) = read("prop:sellerHost")
+hidden backofficeOnionHostProp: String(matches(Regex(#"[a-z2-7]{56}\.onion"#))) = read("prop:backofficeOnionHost")
 
 hidden internalHost: String = "kinetix-api-gateway"
 hidden internalPort: Int = 8000
+hidden onionPort: Int = 8081
 hidden idleSocketTimeout: Int = 90000
 
-hidden hostNames: List<String> = List(publicApiHost, storageHost, backofficeHostProp, sellerHostProp, internalHost)
+hidden hostNames: List<String> = List(
+  publicApiHost,
+  storageHost,
+  backofficeHostProp,
+  backofficeOnionHostProp,
+  sellerHostProp,
+  internalHost
+)
   .filter((host) -> !host.isEmpty)
   .map((host) -> host.split(":").first)
 
 function distinctHost(host: String): String =
   if (hostNames.isDistinct) host
-  else throw("the public API, storage, backoffice, seller and internal hosts must all differ: \(hostNames.join(", "))")
+  else throw("the public API, storage, backoffice, onion, seller and internal hosts must all differ: \(hostNames
+    .map((name) -> if (name.endsWith(".onion")) "<the onion address>" else name)
+    .join(", "))")
 
 hidden backofficeHost: String = distinctHost(backofficeHostProp).split(":").first
 hidden sellerHost: String = distinctHost(sellerHostProp).split(":").first
+hidden backofficeOnionHost: String = distinctHost(backofficeOnionHostProp)
 
 hidden securityTxt: String = List(
   "Contact: https://github.com/WildanFrananda/kinetix-docs/security/advisories/new",
@@ -106,6 +118,15 @@ hidden internalListenerOnly: Dynamic = new {
   }
 }
 
+hidden onionListenerOnly: Dynamic = new {
+  name = "pre-function"
+  config {
+    access {
+      "if kong.request.get_scheme() ~= \"http\" or kong.request.get_port() ~= \(onionPort) then return kong.response.error(421, \"Misdirected Request\") end"
+    }
+  }
+}
+
 function pluginsOf(route: Dynamic): List =
   if (route.hasProperty("plugins")) route.plugins.toList() else List()
 
@@ -137,6 +158,15 @@ function api(route: Dynamic): List<Dynamic> = List(onPublicListener(route, true)
 function publicOnly(route: Dynamic): Dynamic = onPublicListener(route, true)
 
 function browserApp(route: Dynamic): Dynamic = onPublicListener(route, false)
+
+function onOnionListener(route: Dynamic): Dynamic = (route) {
+  hosts { backofficeOnionHost }
+  protocols = List("http")
+  plugins {
+    onionListenerOnly
+    perAddressLimit
+  }
+}
 
 hidden unroutedOnBrowserAppHost: Dynamic = new {
   name = "request-termination"
@@ -203,6 +233,13 @@ services {
         plugins { staffGate }
       })
 
+      onOnionListener(new Dynamic {
+        name = "edge-backoffice-onion-route"
+        paths { "/bff/" }
+        strip_path = false
+        preserve_host = true
+      })
+
       browserApp(new Dynamic {
         name = "edge-seller-route"
         hosts { sellerHost }
@@ -231,6 +268,12 @@ services {
         paths { "/" }
         strip_path = false
         plugins { staffGate }
+      })
+
+      onOnionListener(new Dynamic {
+        name = "backoffice-app-onion-route"
+        paths { "/" }
+        strip_path = false
       })
     }
   }
