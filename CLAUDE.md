@@ -165,15 +165,20 @@ session and sends identity's token on) or `cors` (the app and the edge share an 
   the app's origin from them, but a route host with a port matches only that port. Without it the routes
   match the name whatever port the `Host` header names, so `backoffice.localhost:9999` cannot reach an API
   route either.
-- **Everything else on those hosts is 404.** The API routes name no host, so without more they answer on any
-  host, and an API answer under the app's origin is content on the origin that holds the session cookie.
-  `backoffice-unrouted-route` and `seller-unrouted-route` take `/` on each host and answer
-  `404 {"message":"Not found"}` with `request-termination`. They win because Kong 3.9's priority puts the
+- **Everything else on those hosts is the app or a 404, never the API.** The API routes name no host, so without
+  more they answer on any host, and an API answer under the app's origin is content on the origin that holds the
+  session cookie. `backoffice-app-route` (since 2026-10-27, infra `docs/BACKOFFICE.md` BO-D3) takes `/` on the
+  backoffice host and sends it to `http://kinetix-backoffice:8080`, the backoffice's static app, behind the staff
+  gate and its own per-address limit (Kong keys the counter by route, so assets never spend `/bff/`'s budget);
+  path unchanged, `Host` not kept. `seller-unrouted-route` takes `/` on the seller host and answers
+  `404 {"message":"Not found"}` with `request-termination` until the seller web exists. Until the backoffice
+  container runs, the staff network gets Kong's `503` for a name that does not resolve there. Both win because Kong 3.9's priority puts the
   number of matching fields first and then a plain (non-wildcard) host: host + path beats every host-less
   route, which has at most two fields (methods + path), and the `/bff/` route beats its catch-all by the
   longer prefix. A host-less route with three fields (methods, headers and path) would outrank the
-  catch-all; the probe's table of paths on those hosts would show it. The catch-all carries no methods on
-  purpose: a method it did not list would fall through to the API routes. Kong does not lowercase the
+  catch-all; the probe's table of paths on those hosts would show it. Neither catch-all carries methods, on
+  purpose: a method it did not list would fall through to the API routes. The app answers a method it does not
+  serve itself. Kong does not lowercase the
   `Host` header before routing, so `BACKOFFICE.…` matches neither route and reaches the API like any other
   host; browsers always send the lowercase name, so no page can be served that way.
 
@@ -287,7 +292,7 @@ sockets carry no `jwt` plugin (matching reads its own `?token=`), so this does n
 ## Gates
 
 - CI `config-valid` (GitHub and GitLab, paired): Pkl renders with and without origins and storage, refuses a
-  contradiction, refuses a render without a staff range or with an everyone range, puts the gate on nine routes,
+  contradiction, refuses a render without a staff range or with an everyone range, puts the gate on ten routes (the nine above and the backoffice app),
   `/health` and `security.txt` as above; refuses a render without either browser-app host, with `:443`, or with
   a host name used twice; `test/config_invariants.jq` over a JSON render (only `correlation-id` and `prometheus`
   global; every `jwt` plugin with empty `uri_param_names` and `cookie_names`; every TLS route https-only with
@@ -303,7 +308,7 @@ sockets carry no `jwt` plugin (matching reads its own `?token=`), so this does n
   every public path reaches the same upstream path from both, and `/health`, `security.txt`, the socket paths and a
   CORS preflight answer as above. It also runs the browser-app hosts (`/bff/` reaches the edge's port with
   `Host` kept, the limit and no CORS; the backoffice's refuses an outside address; twenty-odd other paths answer
-  404), TLS requests naming the internal host (421), and, from a third network outside the staff range, the
+  404 on the seller host and reach `kinetix-backoffice:8080` on the backoffice host, or its 403 from outside), TLS requests naming the internal host (421), and, from a third network outside the staff range, the
   plaintext listener: every API path through its twin, every `jwt` twin 401 without a token, the excluded
   routes 426, `X-Forwarded-For` intact, a burst of 120 unlimited. On every `jwt` route and twin, a valid token
   only in `?jwt=` or in a `jwt` cookie gets the 401 for a missing token. The merchant socket's twin passes an
