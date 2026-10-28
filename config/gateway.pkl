@@ -212,19 +212,25 @@ services {
       })
 
       browserApp(new Dynamic {
-        name = "backoffice-unrouted-route"
-        hosts { backofficeHost }
-        paths { "/" }
-        strip_path = false
-        plugins { unroutedOnBrowserAppHost }
-      })
-
-      browserApp(new Dynamic {
         name = "seller-unrouted-route"
         hosts { sellerHost }
         paths { "/" }
         strip_path = false
         plugins { unroutedOnBrowserAppHost }
+      })
+    }
+  }
+
+  new {
+    name = "backoffice-app"
+    url = "http://kinetix-backoffice:8080"
+    routes {
+      browserApp(new Dynamic {
+        name = "backoffice-app-route"
+        hosts { backofficeHost }
+        paths { "/" }
+        strip_path = false
+        plugins { staffGate }
       })
     }
   }

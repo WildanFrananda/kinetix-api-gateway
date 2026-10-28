@@ -46,7 +46,8 @@ The **Kinetix API Gateway** is the single entry point for all external client RE
 | any path on the host `KINETIX_STORAGE_HOST` | `kinetix-object-store:9000` | HTTP (presigned) | none — `Host` preserved for the signature, 16 MB per request; rendered only when the host is set |
 | `/bff/*` on the host `KINETIX_BACKOFFICE_HOST` | `kinetix-edge-service:8080` | HTTP (staff network only, no JWT, no CORS) | none — `Host` preserved; the edge's browser token handler. Read and write timeouts 90 s |
 | `/bff/*` on the host `KINETIX_SELLER_HOST` | `kinetix-edge-service:8080` | HTTP and WebSockets (no JWT, no CORS) | none — `Host` preserved. Read and write timeouts 90 s: the edge holds the merchant socket with 90 s idle timeouts |
-| any other path on those two hosts | Internal Static Response | HTTP | `404 {"message":"Not found"}` — no API route answers on a browser app's origin |
+| any other path on the host `KINETIX_BACKOFFICE_HOST` | `kinetix-backoffice:8080` | HTTP (staff network only, no JWT, no CORS) | none — the backoffice's static app (`kinetix-backoffice`); no API route answers on its origin |
+| any other path on the host `KINETIX_SELLER_HOST` | Internal Static Response | HTTP | `404 {"message":"Not found"}` — no API route answers on a browser app's origin |
 
 "(JWT)" means Kong's `jwt` plugin checks the token's signature and `exp` before the request leaves the
 gateway; every service still verifies the token itself. Kong reads the token from `Authorization: Bearer`
@@ -81,6 +82,7 @@ The paths only an admin may call are served by dedicated routes that also check 
 | `/api/v1/matching/drivers` and below, `/api/v1/matching/backoffice` and below | matching |
 | `/api/v1/orders/sagas` and below, `GET /api/v1/orders/returns/needs-attention`, `POST /api/v1/orders/returns/{returnNumber}/reject`, `POST /api/v1/orders/{orderNumber}/complete` | order |
 | `/bff/` and below on `KINETIX_BACKOFFICE_HOST` (the backoffice's sign-in and every call it makes) | edge |
+| every other path on `KINETIX_BACKOFFICE_HOST` (the backoffice's own pages and assets) | backoffice |
 
 From any other address they answer `403 {"message":"This route is not available from your network","request_id":"…"}`.
 On identity's and matching's, a request without a valid token gets the `jwt` plugin's `401` first. Staff reach

@@ -165,6 +165,31 @@ unrouted() {
   fi
 }
 
+reaches_app() {
+  method="$1"
+  path="$2"
+  want_path="$(printf '%s' "$path" | sed -e 's#/[^/]*/\.\./#/#' -e 's#/[^/]*/%2e%2e/#/#')"
+  call "$@"
+  got="$(jq -r '"\(.request.port) \(.request.headers.host) \(.request.path)"' /tmp/body 2>/dev/null)"
+  if [ "$status" = 200 ] && [ "$got" = "8080 kinetix-backoffice:8080 $want_path" ]; then
+    ok "$NAME $method $path -> the backoffice app at $want_path"
+  else
+    bad "$NAME $method $path -> $status $(head -c 200 /tmp/body) (wanted the backoffice app at $want_path)"
+  fi
+}
+
+outside_bff() {
+  host_app="$1"
+  shift
+  if [ "$host_app" = "$SELLER_NAME" ]; then
+    unrouted "$@"
+  elif [ "$SIDE" = staff ]; then
+    reaches_app "$@"
+  else
+    refused "$@"
+  fi
+}
+
 reaches_edge() {
   method="$1"
   path="$2"
@@ -438,11 +463,11 @@ browser_apps() {
     target https "$app" 8443
     while read -r method path auth; do
       [ -z "$method" ] && continue
-      unrouted "$method" "$path" "$auth"
+      outside_bff "$app" "$method" "$path" "$auth"
     done < /tmp/unrouted_table
 
-    unrouted GET /api/v1/products none -H "Host: $app"
-    unrouted GET /api/v1/products none -H "Host: $app:9999"
+    outside_bff "$app" GET /api/v1/products none -H "Host: $app"
+    outside_bff "$app" GET /api/v1/products none -H "Host: $app:9999"
 
     if [ "$app" = "$BACKOFFICE_NAME" ] && [ "$SIDE" != staff ]; then
       refused GET /bff/session none

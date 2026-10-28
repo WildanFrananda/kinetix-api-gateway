@@ -9,10 +9,10 @@ def without_twin: [
   "storage-route",
   "edge-backoffice-route",
   "edge-seller-route",
-  "backoffice-unrouted-route",
+  "backoffice-app-route",
   "seller-unrouted-route"
 ];
-def browser_app: .name as $name | ["edge-backoffice-route", "edge-seller-route", "backoffice-unrouted-route", "seller-unrouted-route"] | any(.[]; . == $name);
+def browser_app: .name as $name | ["edge-backoffice-route", "edge-seller-route", "backoffice-app-route", "seller-unrouted-route"] | any(.[]; . == $name);
 def route($name): first(.[] | select(.name == $name)) // {};
 def long_lived: .name as $name | ["edge-service", "matching-merchant-socket"] | any(.[]; . == $name);
 def timeouts: {connect_timeout, read_timeout, write_timeout};
@@ -69,9 +69,11 @@ def timeouts: {connect_timeout, read_timeout, write_timeout};
       | select(.hosts != [$seller] or .paths != ["/bff/"] or .strip_path != false or .preserve_host != true
           or .service_url != "http://kinetix-edge-service:8080" or plugin_names != ["rate-limiting"])
       | "edge-seller-route is not the /bff/ route of \($seller): \(.)"),
-    ($routes | route("backoffice-unrouted-route")
-      | select(.hosts != [$backoffice] or .paths != ["/"] or (plugin_names | sort) != ["rate-limiting", "request-termination"])
-      | "backoffice-unrouted-route does not close \($backoffice) outside /bff/: \(.)"),
+    ($routes | route("backoffice-app-route")
+      | select(.hosts != [$backoffice] or .paths != ["/"] or .methods != null or .strip_path != false
+          or .preserve_host == true or .service_url != "http://kinetix-backoffice:8080"
+          or (plugin_names | sort) != ["ip-restriction", "rate-limiting"])
+      | "backoffice-app-route is not the gated app route of \($backoffice) outside /bff/: \(.)"),
     ($routes | route("seller-unrouted-route")
       | select(.hosts != [$seller] or .paths != ["/"] or (plugin_names | sort) != ["rate-limiting", "request-termination"])
       | "seller-unrouted-route does not close \($seller) outside /bff/: \(.)")

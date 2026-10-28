@@ -195,7 +195,7 @@ GET /api/v1/orders/my-orders
 PUBLIC
 
 echo
-echo "── 6. The browser-app hosts serve /bff/ and nothing else"
+echo "── 6. The browser-app hosts: /bff/ to the edge, the backoffice host's other paths to its app, the seller host's to a 404"
 base_authority="${BASE#https://}"
 base_authority="${base_authority%%/*}"
 for variable in KINETIX_BACKOFFICE_HOST KINETIX_SELLER_HOST; do
@@ -211,7 +211,17 @@ for variable in KINETIX_BACKOFFICE_HOST KINETIX_SELLER_HOST; do
   body="$("${CURL[@]}" -s --max-time 10 "${route[@]}" -w '\n%{http_code}' "https://$app_name:$app_port/api/v1/products")"
   code="${body##*$'\n'}"
   body="${body%$'\n'*}"
-  if [ "$code" = 404 ] && printf '%s' "$body" | grep -qF '"message":"Not found"'; then
+  if [ "$variable" = KINETIX_BACKOFFICE_HOST ]; then
+    if [ "$code" = 403 ] && printf '%s' "$body" | grep -qF "$GATE_MESSAGE"; then
+      ok "$app/api/v1/products -> 403 from the staff gate (this address is outside the staff range)"
+    elif [ "$code" = 200 ] && printf '%s' "$body" | grep -qF '<title>Kinetix Backoffice</title>'; then
+      ok "$app/api/v1/products -> the backoffice app's page: no API route answers on this host"
+    elif [ "$code" = 502 ] || [ "$code" = 503 ] || [ "$code" = 504 ]; then
+      bad "$app/api/v1/products -> $code: kinetix-backoffice is not reachable (is it running?)"
+    else
+      bad "$app/api/v1/products -> $code $body (wanted the backoffice app; is $app_name on the gateway's certificate?)"
+    fi
+  elif [ "$code" = 404 ] && printf '%s' "$body" | grep -qF '"message":"Not found"'; then
     ok "$app/api/v1/products -> 404: no API route answers on this host"
   else
     bad "$app/api/v1/products -> $code $body (wanted the browser-app host's 404; is $app_name on the gateway's certificate?)"
