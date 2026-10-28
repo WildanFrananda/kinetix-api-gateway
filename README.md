@@ -28,7 +28,7 @@ The **Kinetix API Gateway** is the single entry point for all external client RE
 | `/api/v1/auth/*` (the rest: `me`, `logout`, `2fa/setup\|enable\|disable/{id}`), `/api/v1/users/{id}/profile` | `kinetix-identity-service:5000` | HTTP REST (JWT) | none |
 | `GET /api/v1/sellers/{id}/application`, `POST /api/v1/sellers/{id}/onboard` | `kinetix-identity-service:5000` | HTTP REST (JWT) | none |
 | `GET /api/v1/sellers/applications`, `POST /api/v1/sellers/{id}/verify`, `/reject` | `kinetix-identity-service:5000` | HTTP REST (JWT, staff network only) | none |
-| `GET /api/v1/couriers/applications`, `POST /api/v1/couriers/{principalId}/approve` | `kinetix-identity-service:5000` | HTTP REST (JWT, staff network only) | none |
+| `GET /api/v1/couriers/applications`, `POST /api/v1/couriers/{principalId}/approve`, `POST /api/v1/couriers/{principalId}/reject` | `kinetix-identity-service:5000` | HTTP REST (JWT, staff network only) | none |
 | `/api/v1/products[/]`, `/products/create[/]`, `/products/manage/{id}[/]`, `/products/{sku}[/]`, `/api/v1/categories[/]`, `/categories/{id}[/]` | `kinetix-catalog-service:8000/api/*` | HTTP REST | `/api/v1/*` ➔ `/api/*`; a trailing slash, present or absent, reaches catalog as sent |
 | `/api/v1/products/search`, `/api/v1/products/suggest` | `kinetix-search-service:8088` | HTTP REST | none — the paths are the service's own |
 | `/api/v1/pricing/*` (`vouchers`, `vouchers/apply`, `vouchers/{code}`, `discounts`, `flash-sales`, `flash-sales/{product_id}`) | `kinetix-pricing-service:6000/api/v1/*` | HTTP REST | `/api/v1/pricing` ➔ `/api/v1`; creates answer 201 and need an `Idempotency-Key` |
@@ -78,7 +78,7 @@ The paths only an admin may call are served by dedicated routes that also check 
 
 | Paths | Service |
 | :--- | :--- |
-| `GET /api/v1/sellers/applications`, `POST /api/v1/sellers/{id}/verify`, `POST /api/v1/sellers/{id}/reject`, `GET /api/v1/couriers/applications`, `POST /api/v1/couriers/{principalId}/approve` | identity |
+| `GET /api/v1/sellers/applications`, `POST /api/v1/sellers/{id}/verify`, `POST /api/v1/sellers/{id}/reject`, `GET /api/v1/couriers/applications`, `POST /api/v1/couriers/{principalId}/approve`, `POST /api/v1/couriers/{principalId}/reject` | identity |
 | `POST`, `PUT`, `PATCH`, `DELETE` on `/api/v1/categories` and `/api/v1/categories/{id}` (`GET` stays public) | catalog |
 | `/api/v1/warehouse/bins`, `/api/v1/warehouse/stock_receipts`, `/api/v1/warehouse/stock_adjustments` | warehouse |
 | `/api/v1/matching/drivers` and below, `/api/v1/matching/backoffice` and below | matching |

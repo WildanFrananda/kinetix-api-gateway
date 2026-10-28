@@ -318,7 +318,7 @@ services {
           "/api/v1/sellers/applications"
           "/api/v1/couriers/applications"
           "~/api/v1/sellers/[^/]+/(verify|reject)"
-          "~/api/v1/couriers/[^/]+/approve"
+          "~/api/v1/couriers/[^/]+/(approve|reject)"
         }
         strip_path = false
         plugins {

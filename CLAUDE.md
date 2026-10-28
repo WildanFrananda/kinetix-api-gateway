@@ -41,7 +41,7 @@ Hardening item 3, option (a), ruled 2026-10-22. Each admin-only path has a dedic
 
 | Route | Paths | Service |
 | :--- | :--- | :--- |
-| `identity-staff-route` | `/api/v1/sellers/applications`, `/api/v1/couriers/applications`, `~/api/v1/sellers/[^/]+/(verify\|reject)`, `~/api/v1/couriers/[^/]+/approve` | `identity-service` (with `jwt`) |
+| `identity-staff-route` | `/api/v1/sellers/applications`, `/api/v1/couriers/applications`, `~/api/v1/sellers/[^/]+/(verify\|reject)`, `~/api/v1/couriers/[^/]+/(approve\|reject)` | `identity-service` (with `jwt`) |
 | `catalog-categories-staff-route` | `/api/v1/categories` for `POST`, `PUT`, `PATCH`, `DELETE` | `catalog-categories` |
 | `warehouse-bins-staff-route`, `-stock-receipts-`, `-stock-adjustments-` | `/api/v1/warehouse/{bins,stock_receipts,stock_adjustments}` | `warehouse-bins`, `warehouse-stock-receipts`, `warehouse-stock-adjustments` |
 | `matching-drivers-staff-route`, `matching-backoffice-staff-route` | `/api/v1/matching/drivers`, `/api/v1/matching/backoffice` | `matching-drivers`, `matching-backoffice` (with `jwt`) |
