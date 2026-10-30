@@ -18,8 +18,15 @@ COPY config/ .
 # the same digest runs everywhere. This step only proves, at build time, that the Pkl evaluates and
 # yields a verification key — with a key pair generated here and discarded with this stage.
 RUN set -eu; \
+    onion=kinetixgatewaybuildabcdefghijklmnopqrstuvwxyz234567abcde.onion; \
     openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out /tmp/throwaway.pem 2>/dev/null; \
     openssl pkey -in /tmp/throwaway.pem -pubout -out /tmp/throwaway-public.pem; \
+    openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 1 \
+                -subj "/CN=$onion" \
+                -addext "subjectAltName=DNS:$onion" \
+                -keyout /tmp/onion.key \
+                -out /tmp/onion.pem 2>/dev/null; \
+    tls="-p backofficeOnionTlsCertFile=/tmp/onion.pem -p backofficeOnionTlsKeyFile=/tmp/onion.key"; \
     pkl eval -p identityJwtPublicKey="$(cat /tmp/throwaway-public.pem)" \
              -p jwtIssuer=https://identity.build.invalid \
              -p corsOrigins= \
@@ -27,7 +34,8 @@ RUN set -eu; \
              -p publicApiHost=api.build.invalid \
              -p backofficeHost=backoffice.build.invalid \
              -p sellerHost=seller.build.invalid \
-             -p backofficeOnionHost=kinetixgatewaybuildabcdefghijklmnopqrstuvwxyz234567abcde.onion \
+             -p backofficeOnionHost="$onion" \
+             $tls \
              -f yaml gateway.pkl -o /tmp/kong.yml; \
     if ! grep -q "rsa_public_key" /tmp/kong.yml; then \
       echo "the rendered config carries no verification key"; exit 1; \
@@ -41,6 +49,11 @@ RUN set -eu; \
     if [ "$twins" -eq 0 ] || [ "$onions" != 2 ] || [ "$((twins + onions))" != "$guards" ]; then \
       echo "$twins internal twins, $onions onion routes and $guards listener guards"; exit 1; \
     fi; \
+    certificates="$(sed -n '/^certificates:/,/^[a-z_]/p' /tmp/kong.yml)"; \
+    if [ "$(printf '%s\n' "$certificates" | grep -c -- '-----BEGIN CERTIFICATE-----')" != 1 ] \
+       || [ "$(printf '%s\n' "$certificates" | grep -cx "  - name: $onion")" != 1 ]; then \
+      echo "the rendered config carries no certificate whose snis is the onion address"; exit 1; \
+    fi; \
     refuses() { \
       if pkl eval -p identityJwtPublicKey="$(cat /tmp/throwaway-public.pem)" \
                   -p jwtIssuer=https://identity.build.invalid \
@@ -51,12 +64,12 @@ RUN set -eu; \
         echo "the config rendered with only $*"; exit 1; \
       fi; \
     }; \
-    onion=kinetixgatewaybuildabcdefghijklmnopqrstuvwxyz234567abcde.onion; \
-    refuses -p backofficeHost=backoffice.build.invalid -p sellerHost=seller.build.invalid -p backofficeOnionHost="$onion"; \
-    refuses -p staffRanges=192.0.2.0/24 -p sellerHost=seller.build.invalid -p backofficeOnionHost="$onion"; \
-    refuses -p staffRanges=192.0.2.0/24 -p backofficeHost=backoffice.build.invalid -p backofficeOnionHost="$onion"; \
-    refuses -p staffRanges=192.0.2.0/24 -p backofficeHost=backoffice.build.invalid -p sellerHost=seller.build.invalid; \
-    rm -f /tmp/throwaway.pem /tmp/throwaway-public.pem /tmp/kong.yml /tmp/kong-without.yml
+    refuses $tls -p backofficeHost=backoffice.build.invalid -p sellerHost=seller.build.invalid -p backofficeOnionHost="$onion"; \
+    refuses $tls -p staffRanges=192.0.2.0/24 -p sellerHost=seller.build.invalid -p backofficeOnionHost="$onion"; \
+    refuses $tls -p staffRanges=192.0.2.0/24 -p backofficeHost=backoffice.build.invalid -p backofficeOnionHost="$onion"; \
+    refuses $tls -p staffRanges=192.0.2.0/24 -p backofficeHost=backoffice.build.invalid -p sellerHost=seller.build.invalid; \
+    refuses -p staffRanges=192.0.2.0/24 -p backofficeHost=backoffice.build.invalid -p sellerHost=seller.build.invalid -p backofficeOnionHost="$onion"; \
+    rm -f /tmp/throwaway.pem /tmp/throwaway-public.pem /tmp/onion.pem /tmp/onion.key /tmp/kong.yml /tmp/kong-without.yml
 
 # Pin the Kong minor rather than `latest`: the gateway is the platform's only published
 # surface, and `latest` means a rebuild can change what terminates every request without a
@@ -86,7 +99,8 @@ ENV KONG_PROXY_ACCESS_LOG="logs/access.log kinetix"
 
 # The certificate and key are placed by bin/entrypoint.sh from files or from the environment; they
 # are not in this image.
-ENV KONG_PROXY_LISTEN="0.0.0.0:8443 ssl, 0.0.0.0:8000, 0.0.0.0:8081"
+ENV KONG_PROXY_LISTEN="0.0.0.0:8443 ssl, 0.0.0.0:8000, 0.0.0.0:8081, 0.0.0.0:8444 ssl"
+ENV KONG_ADMIN_LISTEN=off
 
 EXPOSE 8443
 

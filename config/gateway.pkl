@@ -23,9 +23,27 @@ hidden backofficeHostProp: String(matches(Regex(hostPattern)), !endsWith(":443")
 hidden sellerHostProp: String(matches(Regex(hostPattern)), !endsWith(":443")) = read("prop:sellerHost")
 hidden backofficeOnionHostProp: String(matches(Regex(#"[a-z2-7]{56}\.onion"#))) = read("prop:backofficeOnionHost")
 
+function pemFile(path: String, marker: String, what: String): String =
+  let (text = read("file:\(path)").text)
+    if (text.contains(marker)) text
+    else throw("the file given as \(what) does not hold one")
+
+hidden backofficeOnionTlsCert: String = pemFile(
+  read("prop:backofficeOnionTlsCertFile"),
+  "-----BEGIN CERTIFICATE-----",
+  "the onion's TLS certificate"
+)
+
+hidden backofficeOnionTlsKey: String = pemFile(
+  read("prop:backofficeOnionTlsKeyFile"),
+  "PRIVATE KEY-----",
+  "the onion's TLS private key"
+)
+
 hidden internalHost: String = "kinetix-api-gateway"
 hidden internalPort: Int = 8000
 hidden onionPort: Int = 8081
+hidden onionTlsPort: Int = 8444
 hidden idleSocketTimeout: Int = 90000
 
 hidden hostNames: List<String> = List(
@@ -122,7 +140,7 @@ hidden onionListenerOnly: Dynamic = new {
   name = "pre-function"
   config {
     access {
-      "if kong.request.get_scheme() ~= \"http\" or kong.request.get_port() ~= \(onionPort) then return kong.response.error(421, \"Misdirected Request\") end"
+      "if kong.request.get_scheme() == \"http\" and kong.request.get_port() == \(onionPort) then return kong.response.exit(308, nil, { Location = \"https://\(backofficeOnionHost)\" .. kong.request.get_path_with_query() }) end if kong.request.get_scheme() ~= \"https\" or kong.request.get_port() ~= \(onionTlsPort) then return kong.response.error(421, \"Misdirected Request\") end"
     }
   }
 }
@@ -161,7 +179,7 @@ function browserApp(route: Dynamic): Dynamic = onPublicListener(route, false)
 
 function onOnionListener(route: Dynamic): Dynamic = (route) {
   hosts { backofficeOnionHost }
-  protocols = List("http")
+  protocols = List("http", "https")
   plugins {
     onionListenerOnly
     perAddressLimit
@@ -657,6 +675,17 @@ consumers {
         rsa_public_key = identityJwtPublicKey
         secret = "unused-this-credential-verifies-with-rs256"
       }
+    }
+  }
+}
+
+certificates {
+  new {
+    id = "1d04694d-a391-4ce3-92ea-bf8371b658aa"
+    cert = backofficeOnionTlsCert
+    key = backofficeOnionTlsKey
+    snis {
+      new { name = backofficeOnionHost }
     }
   }
 }

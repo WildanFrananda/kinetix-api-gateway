@@ -62,12 +62,16 @@ config-valid:
     - |
       openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out /tmp/throwaway.pem 2>/dev/null
       openssl pkey -in /tmp/throwaway.pem -pubout -out /tmp/throwaway-public.pem
+      openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 1 \
+                  -subj "/CN=$ONION_HOST" -addext "subjectAltName=DNS:$ONION_HOST" \
+                  -keyout /tmp/onion.key -out /tmp/onion.pem 2>/dev/null
       render() {
         pkl eval -p identityJwtPublicKey="$(cat /tmp/throwaway-public.pem)" \
                  -p jwtIssuer=https://identity.ci.invalid -p corsOrigins="$1" \
                  -p staffRanges=192.0.2.0/24 -p publicApiHost=api.ci.invalid \
                  -p backofficeHost=backoffice.ci.invalid:8443 -p sellerHost=seller.ci.invalid \
                  -p backofficeOnionHost="$ONION_HOST" \
+                 -p backofficeOnionTlsCertFile=/tmp/onion.pem -p backofficeOnionTlsKeyFile=/tmp/onion.key \
                  -f yaml config/gateway.pkl -o "$2"
       }
       render "https://app.ci.invalid" kong.yml
@@ -87,6 +91,7 @@ config-valid:
                  -p jwtIssuer=https://identity.ci.invalid -p corsOrigins= \
                  -p publicApiHost=api.ci.invalid -p backofficeHost=backoffice.ci.invalid:8443 \
                  -p sellerHost=seller.ci.invalid -p backofficeOnionHost="$ONION_HOST" "$@" \
+                 -p backofficeOnionTlsCertFile=/tmp/onion.pem -p backofficeOnionTlsKeyFile=/tmp/onion.key \
                  -f yaml config/gateway.pkl -o /tmp/kong-gate.yml 2>/dev/null
       }
       if gate; then
@@ -113,6 +118,7 @@ config-valid:
         pkl eval -p identityJwtPublicKey="$(cat /tmp/throwaway-public.pem)" \
                  -p jwtIssuer=https://identity.ci.invalid -p corsOrigins= \
                  -p staffRanges=192.0.2.0/24 -p publicApiHost=api.ci.invalid "$@" \
+                 -p backofficeOnionTlsCertFile=/tmp/onion.pem -p backofficeOnionTlsKeyFile=/tmp/onion.key \
                  -f yaml config/gateway.pkl -o /tmp/kong-hosts.yml 2>/dev/null
       }
       if hosts -p sellerHost=seller.ci.invalid -p backofficeOnionHost="$ONION_HOST"; then
@@ -145,13 +151,42 @@ config-valid:
                -p staffRanges=192.0.2.0/24 -p publicApiHost=api.ci.invalid \
                -p backofficeHost=backoffice.ci.invalid:8443 -p sellerHost=seller.ci.invalid \
                -p backofficeOnionHost="$ONION_HOST" \
+               -p backofficeOnionTlsCertFile=/tmp/onion.pem -p backofficeOnionTlsKeyFile=/tmp/onion.key \
                -p storageHost=storage.ci.invalid -f json config/gateway.pkl -o /tmp/kong.json
       broken="$(jq -r --arg backoffice backoffice.ci.invalid --arg seller seller.ci.invalid --arg onion "$ONION_HOST" \
                      -f test/config_invariants.jq /tmp/kong.json)"
       if [ -n "$broken" ]; then
         printf '%s\n' "$broken"; exit 1
       fi
-      echo "/bff/ on the two browser-app hosts goes to the edge, the rest of the backoffice host to its app, nothing else answers there; the onion address has its two guarded plaintext routes; every API route has its plaintext twin"
+      echo "/bff/ on the two browser-app hosts goes to the edge, the rest of the backoffice host to its app, nothing else answers there; the onion address has its two guarded routes, served over TLS on 8444 with its own certificate and redirected from 8081; every API route has its plaintext twin"
+    - |
+      onion_tls() {
+        pkl eval -p identityJwtPublicKey="$(cat /tmp/throwaway-public.pem)" \
+                 -p jwtIssuer=https://identity.ci.invalid -p corsOrigins= \
+                 -p staffRanges=192.0.2.0/24 -p publicApiHost=api.ci.invalid \
+                 -p backofficeHost=backoffice.ci.invalid:8443 -p sellerHost=seller.ci.invalid \
+                 -p backofficeOnionHost="$ONION_HOST" "$@" \
+                 -f yaml config/gateway.pkl -o /tmp/kong-onion-tls.yml 2>/tmp/onion-tls.err
+      }
+      if onion_tls; then
+        echo "the config rendered without the onion's certificate and key"; exit 1
+      fi
+      if onion_tls -p backofficeOnionTlsCertFile=/tmp/onion.pem; then
+        echo "the config rendered without the onion's key"; exit 1
+      fi
+      if onion_tls -p backofficeOnionTlsKeyFile=/tmp/onion.key; then
+        echo "the config rendered without the onion's certificate"; exit 1
+      fi
+      if onion_tls -p backofficeOnionTlsCertFile=/tmp/onion.pem -p backofficeOnionTlsKeyFile=/tmp/onion.pem; then
+        echo "a certificate was accepted as the onion's private key"; exit 1
+      fi
+      if onion_tls -p backofficeOnionTlsCertFile=/tmp/onion.key -p backofficeOnionTlsKeyFile=/tmp/onion.key; then
+        echo "a private key was accepted as the onion's certificate"; exit 1
+      fi
+      if grep -qF "$(sed -n 2p /tmp/onion.key)" /tmp/onion-tls.err; then
+        echo "refusing a private key as the onion's certificate printed the key"; exit 1
+      fi
+      echo "the onion's certificate and key are required, each must be what it claims, and a refusal never prints the key"
     - deck file validate kong.yml
     - deck file validate kong-no-cors.yml
     - deck file validate /tmp/kong.json

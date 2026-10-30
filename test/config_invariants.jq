@@ -2,8 +2,11 @@ def plugin_names: [.plugins[]?.name];
 def has_plugin($name): plugin_names | any(.[]; . == $name);
 def twin: .name | endswith("-internal");
 def onion: .name | endswith("-onion-route");
-def guard_port: [.plugins[]? | select(.name == "pre-function") | .config.access[0]][0] // ""
-  | capture("get_port\\(\\) ~= (?<port>[0-9]+) ").port // null;
+def guard: [.plugins[]? | select(.name == "pre-function") | .config.access[0]][0] // "";
+def guard_port: guard | capture("get_port\\(\\) ~= (?<port>[0-9]+) ").port // null;
+def redirect: guard
+  | capture("get_scheme\\(\\) == \"http\" and kong\\.request\\.get_port\\(\\) == (?<port>[0-9]+) then return kong\\.response\\.exit\\((?<status>[0-9]+), nil, \\{ Location = \"(?<location>[^\"]*)\" \\.\\. kong\\.request\\.get_path_with_query\\(\\) \\}\\) end ")
+  // null;
 def shape: {paths, methods, strip_path, service_url, jwt: has_plugin("jwt")};
 def without_twin: [
   "health-route",
@@ -85,9 +88,15 @@ def timeouts: {connect_timeout, read_timeout, write_timeout};
     (if ($onions | map(.name) | sort) != ["backoffice-app-onion-route", "edge-backoffice-onion-route"]
       then "the onion routes are \($onions | map(.name) | sort), not the backoffice's two"
       else empty end),
-    ($onions[] | select(.protocols != ["http"] or .hosts != [$onion] or plugin_names != ["pre-function", "rate-limiting"])
-      | "\(.name) is not the guarded plaintext route of the onion host with only its limit: \(.)"),
-    ($onions[] | select(guard_port != "8081") | "\(.name)'s guard does not pin the onion port 8081: \(guard_port)"),
+    ($onions[] | select(.protocols != ["http", "https"] or .hosts != [$onion] or plugin_names != ["pre-function", "rate-limiting"])
+      | "\(.name) is not the guarded route of the onion host, over http and https, with only its limit: \(.)"),
+    ($onions[] | select(guard_port != "8444") | "\(.name)'s guard does not serve the onion's TLS port 8444 alone: \(guard_port)"),
+    ($onions[] | select(redirect != {port: "8081", status: "308", location: "https://\($onion)"})
+      | "\(.name)'s guard does not redirect plaintext on 8081 to https://<the onion address> with 308: \(redirect)"),
+    (if [.certificates[]?] | length != 1 then "\([.certificates[]?] | length) certificates, not the onion's one" else empty end),
+    (.certificates[]? | select(.snis != [{name: $onion}]) | "a certificate is not for the onion host alone: \(.snis)"),
+    (.certificates[]? | select((.cert | contains("-----BEGIN CERTIFICATE-----") | not) or (.key | contains("PRIVATE KEY-----") | not))
+      | "the onion's certificate entity does not carry a PEM certificate and private key"),
     ($routes[] | select(onion | not) | select((.hosts // []) | any(.[]; . == $onion))
       | "\(.name) names the onion host, which only the onion routes may"),
     ($routes | route("edge-backoffice-onion-route")

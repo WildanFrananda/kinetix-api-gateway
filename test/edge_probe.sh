@@ -60,12 +60,18 @@ docker run --rm \
   -e BACKOFFICE_NAME="$BACKOFFICE_NAME" \
   -e SELLER_NAME="$SELLER_NAME" \
   -e STORAGE_HOST="$STORAGE_HOST" \
+  -e ONION_NAME="$ONION_NAME" \
   -e ISSUER="$ISSUER" \
   "$PROBE_IMAGE" sh /work/material.sh
 
 jwt_key="$(base64 < "$work/jwt-public.pem" | tr -d '\n')"
 tls_cert="$(base64 < "$work/tls.pem" | tr -d '\n')"
 tls_key="$(base64 < "$work/tls.key" | tr -d '\n')"
+onion_cert="$(base64 < "$work/onion.pem" | tr -d '\n')"
+onion_key="$(base64 < "$work/onion.key" | tr -d '\n')"
+onion_other_key="$(base64 < "$work/onion-other.key" | tr -d '\n')"
+onion_key_line="$(sed -n 2p "$work/onion.key")"
+onion_cert_line="$(sed -n 2p "$work/onion.pem")"
 
 failures=0
 
@@ -81,9 +87,14 @@ refuses_to_start() {
     -e KINETIX_GATEWAY_CORS_ORIGINS= \
     -e KINETIX_GATEWAY_TLS_CERT_B64="$tls_cert" \
     -e KINETIX_GATEWAY_TLS_KEY_B64="$tls_key" \
+    -e KINETIX_BACKOFFICE_ONION_TLS_CERT_B64="$onion_cert" \
+    -e KINETIX_BACKOFFICE_ONION_TLS_KEY_B64="$onion_key" \
     "$@" \
-    "$IMAGE" kong version 2>&1)"; then
+    "$IMAGE" kong config parse /usr/local/kong/declarative/kong.yml 2>&1)"; then
     echo "  FAIL  the gateway started $label"
+    failures=$((failures + 1))
+  elif printf '%s' "$output" | grep -qF -e "$onion_key_line" -e "$onion_cert_line"; then
+    echo "  FAIL  the gateway refused to start $label, and printed the onion's certificate or key"
     failures=$((failures + 1))
   elif printf '%s' "$output" | grep -q "$expected"; then
     echo "  ok    the gateway refuses to start $label"
@@ -140,6 +151,38 @@ refuses_to_start "with an onion address that is not one" "Type constraint" \
   -e KINETIX_SELLER_HOST="$SELLER_NAME" \
   -e KINETIX_BACKOFFICE_ONION_HOST="http://$ONION_NAME"
 
+hosts=(
+  -e KINETIX_GATEWAY_STAFF_RANGES="$STAFF_PREFIX.0/24"
+  -e KINETIX_PUBLIC_API_HOST="$API_HOST"
+  -e KINETIX_BACKOFFICE_HOST="$BACKOFFICE_NAME:8443"
+  -e KINETIX_SELLER_HOST="$SELLER_NAME"
+  -e KINETIX_BACKOFFICE_ONION_HOST="$ONION_NAME"
+)
+
+echo "── the gateway fails fast without the onion's certificate, or with one that is not"
+refuses_to_start "without the onion's certificate" "KINETIX_BACKOFFICE_ONION_TLS_CERT_B64 is required" \
+  "${hosts[@]}" \
+  -e KINETIX_BACKOFFICE_ONION_TLS_CERT_B64=
+refuses_to_start "without the onion's key" "KINETIX_BACKOFFICE_ONION_TLS_KEY_B64 is required" \
+  "${hosts[@]}" \
+  -e KINETIX_BACKOFFICE_ONION_TLS_KEY_B64=
+refuses_to_start "with the onion's key given as its certificate" "did not decode to a PEM certificate" \
+  "${hosts[@]}" \
+  -e KINETIX_BACKOFFICE_ONION_TLS_CERT_B64="$onion_key"
+refuses_to_start "with an onion certificate that is not base64" "did not decode to a PEM certificate" \
+  "${hosts[@]}" \
+  -e KINETIX_BACKOFFICE_ONION_TLS_CERT_B64="not base64 at all"
+refuses_to_start "with the onion's certificate given as its key" "did not decode to a PEM private key" \
+  "${hosts[@]}" \
+  -e KINETIX_BACKOFFICE_ONION_TLS_KEY_B64="$onion_cert"
+refuses_to_start "with a certificate for other hosts on the onion" "is not a certificate for KINETIX_BACKOFFICE_ONION_HOST" \
+  "${hosts[@]}" \
+  -e KINETIX_BACKOFFICE_ONION_TLS_CERT_B64="$tls_cert" \
+  -e KINETIX_BACKOFFICE_ONION_TLS_KEY_B64="$tls_key"
+refuses_to_start "with a key that is not the onion certificate's" "certificate does not match key" \
+  "${hosts[@]}" \
+  -e KINETIX_BACKOFFICE_ONION_TLS_KEY_B64="$onion_other_key"
+
 docker network create --subnet "$STAFF_PREFIX.0/24" "$RUN-staff" >/dev/null
 docker network create --subnet "$OUTSIDE_PREFIX.0/24" "$RUN-outside" >/dev/null
 docker network create --subnet "$INTERNAL_PREFIX.0/24" "$RUN-internal" >/dev/null
@@ -176,6 +219,8 @@ docker run -d --name "$RUN-gateway" \
   -e KINETIX_STORAGE_HOST="$STORAGE_HOST" \
   -e KINETIX_GATEWAY_TLS_CERT_B64="$tls_cert" \
   -e KINETIX_GATEWAY_TLS_KEY_B64="$tls_key" \
+  -e KINETIX_BACKOFFICE_ONION_TLS_CERT_B64="$onion_cert" \
+  -e KINETIX_BACKOFFICE_ONION_TLS_KEY_B64="$onion_key" \
   -e KONG_STATUS_LISTEN=0.0.0.0:8100 \
   -e KONG_DNS_VALID_TTL=5 \
   "$IMAGE" >/dev/null
@@ -225,6 +270,13 @@ if ! run_checks staff wait 20; then
 fi
 
 expected_twins="$(docker exec "$RUN-gateway" grep -c -- '-internal$' /usr/local/kong/declarative/kong.yml || true)"
+leftovers="$(docker exec "$RUN-gateway" find /tmp -mindepth 1 -maxdepth 1 ! -name kong-tls)"
+if [ -z "$leftovers" ]; then
+  echo "  ok    the entrypoint left no temporaries in /tmp (only the TLS directory it owns)"
+else
+  echo "  FAIL  the entrypoint left temporaries in /tmp: $leftovers"
+  failures=$((failures + 1))
+fi
 if [ "${expected_twins:-0}" -eq 0 ]; then
   echo "  FAIL  the rendered config has no internal twins"
   failures=$((failures + 1))
