@@ -48,6 +48,14 @@ if [ -z "${KINETIX_BACKOFFICE_ONION_HOST:-}" ]; then
   echo "KINETIX_BACKOFFICE_ONION_HOST is required: the backoffice's onion address, served on the onion listener." >&2
   exit 1
 fi
+if [ -z "${KINETIX_BACKOFFICE_ONION_TLS_CERT_B64:-}" ]; then
+  echo "KINETIX_BACKOFFICE_ONION_TLS_CERT_B64 is required: the onion address's certificate, served on the onion's TLS listener." >&2
+  exit 1
+fi
+if [ -z "${KINETIX_BACKOFFICE_ONION_TLS_KEY_B64:-}" ]; then
+  echo "KINETIX_BACKOFFICE_ONION_TLS_KEY_B64 is required: the private key of the onion address's certificate." >&2
+  exit 1
+fi
 
 CONFIG="${KONG_DECLARATIVE_CONFIG:-/usr/local/kong/declarative/kong.yml}"
 umask 077
@@ -56,6 +64,20 @@ public_key="$(mktemp)"
 printf '%s' "$KINETIX_IDENTITY_JWT_PUBLIC_KEY_B64" | base64 -d > "$public_key"
 if ! grep -q "BEGIN PUBLIC KEY" "$public_key"; then
   echo "KINETIX_IDENTITY_JWT_PUBLIC_KEY_B64 did not decode to a PEM public key" >&2
+  exit 1
+fi
+
+onion_cert="$(mktemp)"
+onion_key="$(mktemp)"
+trap 'rm -f "$onion_cert" "$onion_key"' EXIT
+printf '%s' "$KINETIX_BACKOFFICE_ONION_TLS_CERT_B64" | base64 -d > "$onion_cert" || true
+printf '%s' "$KINETIX_BACKOFFICE_ONION_TLS_KEY_B64" | base64 -d > "$onion_key" || true
+if ! grep -q "BEGIN CERTIFICATE" "$onion_cert"; then
+  echo "KINETIX_BACKOFFICE_ONION_TLS_CERT_B64 did not decode to a PEM certificate" >&2
+  exit 1
+fi
+if ! grep -q "PRIVATE KEY" "$onion_key"; then
+  echo "KINETIX_BACKOFFICE_ONION_TLS_KEY_B64 did not decode to a PEM private key" >&2
   exit 1
 fi
 
@@ -69,8 +91,16 @@ pkl eval \
   -p backofficeHost="$KINETIX_BACKOFFICE_HOST" \
   -p sellerHost="$KINETIX_SELLER_HOST" \
   -p backofficeOnionHost="$KINETIX_BACKOFFICE_ONION_HOST" \
+  -p backofficeOnionTlsCertFile="$onion_cert" \
+  -p backofficeOnionTlsKeyFile="$onion_key" \
   -f yaml /usr/local/kong/kinetix/gateway.pkl -o "$CONFIG"
-rm -f "$public_key"
+
+if ! openssl x509 -in "$onion_cert" -noout -checkhost "$KINETIX_BACKOFFICE_ONION_HOST" 2>/dev/null \
+  | grep -q " does match "; then
+  echo "KINETIX_BACKOFFICE_ONION_TLS_CERT_B64 is not a certificate for KINETIX_BACKOFFICE_ONION_HOST" >&2
+  exit 1
+fi
+rm -f "$public_key" "$onion_cert" "$onion_key"
 
 # Assert the result, not pkl's exit status alone: a gateway that starts without a verification key
 # routes everything and authenticates nothing.

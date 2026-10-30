@@ -311,37 +311,67 @@ for where in "query" "cookie"; do
 done
 
 echo
-echo "── 9. The onion listener: the backoffice on its onion address, plaintext from the network, never published"
+echo "── 9. The onion listeners: the backoffice over TLS on 8444, 8081 redirecting to it, neither published"
 onion="$(docker exec "$GW" printenv KINETIX_BACKOFFICE_ONION_HOST 2>/dev/null || true)"
+ONION_CA_FILE="${ONION_CA_FILE:-$HERE/../kinetix-infrastructure/pki/onion/ca.crt}"
 if [ -z "$onion" ]; then
   bad "KINETIX_BACKOFFICE_ONION_HOST is not set on the gateway"
 else
-  if [ -z "$(docker port "$GW" 8081 2>/dev/null)" ]; then
-    ok "port 8081 is not published"
-  else
-    bad "port 8081 is published: $(docker port "$GW" 8081)"
-  fi
+  for port in 8081 8444; do
+    if [ -z "$(docker port "$GW" "$port" 2>/dev/null)" ]; then
+      ok "port $port is not published"
+    else
+      bad "port $port is published: $(docker port "$GW" "$port")"
+    fi
+  done
+
   on_listener() {
     docker run --rm --network "$network" alpine:3.22.2@sha256:4b7ce07002c69e8f3d704a9c5d6fd3053be500b7f1c69fc0d80990c2ad8dd412 \
       wget -S -O - --header "Host: $onion" "http://kinetix-api-gateway:$1$2" 2>&1
   }
+  over_tls() {
+    printf 'GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n' "$1" "$onion" \
+      | docker exec -i "$GW" sh -c 'openssl s_client -quiet -connect 127.0.0.1:8444 -servername "$KINETIX_BACKOFFICE_ONION_HOST" 2>/dev/null'
+  }
   status_of() {
     awk '/^  HTTP\// { code=$2 } END { print code }'
   }
-  answer="$(on_listener 8081 /api/v1/products)"
-  if [ "$(printf '%s\n' "$answer" | status_of)" = 200 ] && printf '%s' "$answer" | grep -qF '<title>Kinetix Backoffice</title>'; then
-    ok "the onion address /api/v1/products on 8081 -> the backoffice app's page: no API route answers there"
+  first_status_of() {
+    awk '/^ *HTTP\// { print $2; exit }'
+  }
+
+  if [ ! -s "$ONION_CA_FILE" ]; then
+    bad "no onion CA at $ONION_CA_FILE: run bin/kinetix onion tls dev in kinetix-infrastructure, or set ONION_CA_FILE"
   else
-    bad "the onion address /api/v1/products on 8081 -> $(printf '%s\n' "$answer" | status_of) (wanted the backoffice app; is it running?)"
+    verified="$(docker exec -i "$GW" sh -c 'served="$(mktemp)"; openssl s_client -connect 127.0.0.1:8444 -servername "$KINETIX_BACKOFFICE_ONION_HOST" </dev/null 2>/dev/null | openssl x509 > "$served" 2>/dev/null; openssl verify -CAfile /dev/stdin -verify_hostname "$KINETIX_BACKOFFICE_ONION_HOST" "$served" >/dev/null 2>&1 && echo verified; rm -f "$served"' < "$ONION_CA_FILE")"
+    if [ "$verified" = verified ]; then
+      ok "8444 presents the onion address's certificate, and it verifies against the onion CA"
+    else
+      bad "8444's certificate for the onion address does not verify against $ONION_CA_FILE"
+    fi
   fi
-  answer="$(on_listener 8081 /bff/session)"
-  code="$(printf '%s\n' "$answer" | status_of)"
-  if [ -z "$code" ] || [ "$code" = 502 ] || [ "$code" = 503 ] || [ "$code" = 504 ]; then
-    bad "the onion address /bff/session on 8081 -> '$code': the edge is not reachable"
-  elif printf '%s' "$answer" | grep -qE 'no Route matched|Misdirected Request'; then
-    bad "the onion address /bff/session on 8081 -> $code from Kong, not the edge"
+
+  answer="$(over_tls /api/v1/products)"
+  if [ "$(printf '%s\n' "$answer" | tr -d '\r' | first_status_of)" = 200 ] && printf '%s' "$answer" | grep -qF '<title>Kinetix Backoffice</title>'; then
+    ok "the onion address /api/v1/products on 8444 -> the backoffice app's page: no API route answers there"
   else
-    ok "the onion address /bff/session on 8081 -> $code from the edge"
+    bad "the onion address /api/v1/products on 8444 -> $(printf '%s\n' "$answer" | tr -d '\r' | first_status_of) (wanted the backoffice app; is it running?)"
+  fi
+  answer="$(over_tls /bff/session)"
+  code="$(printf '%s\n' "$answer" | tr -d '\r' | first_status_of)"
+  if [ -z "$code" ] || [ "$code" = 502 ] || [ "$code" = 503 ] || [ "$code" = 504 ]; then
+    bad "the onion address /bff/session on 8444 -> '$code': the edge is not reachable"
+  elif printf '%s' "$answer" | grep -qE 'no Route matched|Misdirected Request'; then
+    bad "the onion address /bff/session on 8444 -> $code from Kong, not the edge"
+  else
+    ok "the onion address /bff/session on 8444 -> $code from the edge"
+  fi
+
+  answer="$(on_listener 8081 /bff/session)"
+  if [ "$(printf '%s\n' "$answer" | first_status_of)" = 308 ] && printf '%s' "$answer" | grep -qF "Location: https://$onion/bff/session"; then
+    ok "the onion address /bff/session on 8081 -> 308 to https://<the onion address>/bff/session, no port"
+  else
+    bad "the onion address /bff/session on 8081 -> $(printf '%s\n' "$answer" | first_status_of) (wanted 308 to the same path over HTTPS)"
   fi
   code="$(on_listener 8000 /bff/session | status_of)"
   if [ "$code" = 421 ]; then
@@ -351,9 +381,9 @@ else
   fi
   code="$("${CURL[@]}" -s -o /dev/null -w '%{http_code}' --max-time 10 -H "Host: $onion" "$BASE/bff/session")"
   if [ "$code" = 421 ]; then
-    ok "TLS naming the onion address -> 421: the onion routes never answer the public listener"
+    ok "TLS on the public listener naming the onion address -> 421: the onion routes never answer it"
   else
-    bad "TLS naming the onion address -> $code (wanted 421)"
+    bad "TLS on the public listener naming the onion address -> $code (wanted 421)"
   fi
 fi
 

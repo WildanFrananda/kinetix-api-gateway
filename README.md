@@ -6,9 +6,9 @@ The **Kinetix API Gateway** is the single entry point for all external client RE
 
 ## 🏛️ Stack & Architecture
 
-- **Gateway Engine**: **Kong Gateway (DB-less Mode)**. The public listener is `:8443`, TLS only. A plaintext listener on `:8000` serves only the edge's calls on the Docker network, and a plaintext listener on `:8081` serves only the backoffice's onion address for the `tor` container; neither is ever published (see "Internal listener" and "Onion listener" below).
-- **Configuration Engine**: **Apple Pkl (`config/gateway.pkl`)** rendered to `/usr/local/kong/declarative/kong.yml` by `bin/entrypoint.sh` **when the container starts**, from `KINETIX_IDENTITY_JWT_PUBLIC_KEY_B64`, `KINETIX_JWT_ISSUER`, `KINETIX_GATEWAY_CORS_ORIGINS`, `KINETIX_GATEWAY_STAFF_RANGES`, `KINETIX_PUBLIC_API_HOST`, `KINETIX_BACKOFFICE_HOST`, `KINETIX_BACKOFFICE_ONION_HOST` and `KINETIX_SELLER_HOST` (and the optional `KINETIX_STORAGE_HOST`). The image carries no key, issuer, origin, address range, host or certificate, so one digest runs in every environment.
-- **TLS**: `KINETIX_GATEWAY_TLS_CERT_FILE` + `_KEY_FILE` (production, Let's Encrypt on disk) or `KINETIX_GATEWAY_TLS_CERT_B64` + `_KEY_B64` (the lab, from the SOPS store) — exactly one pair.
+- **Gateway Engine**: **Kong Gateway (DB-less Mode)**. The public listener is `:8443`, TLS only. A plaintext listener on `:8000` serves only the edge's calls on the Docker network; a TLS listener on `:8444` serves the backoffice's onion address for the `tor` container, and a plaintext listener on `:8081` only redirects that address to HTTPS. None of the three is ever published (see "Internal listener" and "Onion listeners" below). `KONG_PROXY_LISTEN` is `0.0.0.0:8443 ssl, 0.0.0.0:8000, 0.0.0.0:8081, 0.0.0.0:8444 ssl`, and Kong's admin API is off (`KONG_ADMIN_LISTEN=off`): its default listener holds `127.0.0.1:8444`.
+- **Configuration Engine**: **Apple Pkl (`config/gateway.pkl`)** rendered to `/usr/local/kong/declarative/kong.yml` by `bin/entrypoint.sh` **when the container starts**, from `KINETIX_IDENTITY_JWT_PUBLIC_KEY_B64`, `KINETIX_JWT_ISSUER`, `KINETIX_GATEWAY_CORS_ORIGINS`, `KINETIX_GATEWAY_STAFF_RANGES`, `KINETIX_PUBLIC_API_HOST`, `KINETIX_BACKOFFICE_HOST`, `KINETIX_BACKOFFICE_ONION_HOST`, `KINETIX_BACKOFFICE_ONION_TLS_CERT_B64`, `KINETIX_BACKOFFICE_ONION_TLS_KEY_B64` and `KINETIX_SELLER_HOST` (and the optional `KINETIX_STORAGE_HOST`). The image carries no key, issuer, origin, address range, host or certificate, so one digest runs in every environment.
+- **TLS**: `KINETIX_GATEWAY_TLS_CERT_FILE` + `_KEY_FILE` (production, Let's Encrypt on disk) or `KINETIX_GATEWAY_TLS_CERT_B64` + `_KEY_B64` (the lab, from the SOPS store) — exactly one pair. The onion address has its own certificate, `KINETIX_BACKOFFICE_ONION_TLS_CERT_B64` + `_KEY_B64` (base64 PEM, issued by our own CA, from the store), required, served to the onion address's SNI only; the entrypoint refuses to start when it is missing, is not a PEM certificate and private key, or does not name `KINETIX_BACKOFFICE_ONION_HOST`, and Kong refuses a key that is not the certificate's.
 - **Security & Plugins**:
   - CORS from `KINETIX_GATEWAY_CORS_ORIGINS`, never with credentials, on every TLS route except the browser apps' `/bff/`. Empty leaves the `cors` plugin out, because Kong's plugin with no origins answers `*`.
   - Rate Limiting (`rate-limiting` plugin, 100 req/min per address and per route; Midtrans' callback 600) on every TLS route, none on the internal twins.
@@ -48,8 +48,9 @@ The **Kinetix API Gateway** is the single entry point for all external client RE
 | `/bff/*` on the host `KINETIX_SELLER_HOST` | `kinetix-edge-service:8080` | HTTP and WebSockets (no JWT, no CORS) | none — `Host` preserved. Read and write timeouts 90 s: the edge holds the merchant socket with 90 s idle timeouts |
 | any other path on the host `KINETIX_BACKOFFICE_HOST` | `kinetix-backoffice:8080` | HTTP (staff network only, no JWT, no CORS) | none — the backoffice's static app (`kinetix-backoffice`); no API route answers on its origin |
 | any other path on the host `KINETIX_SELLER_HOST` | Internal Static Response | HTTP | `404 {"message":"Not found"}` — no API route answers on a browser app's origin |
-| `/bff/*` on the host `KINETIX_BACKOFFICE_ONION_HOST`, onion listener `:8081` only | `kinetix-edge-service:8080` | HTTP (plaintext from `tor`, no staff gate, no JWT, no CORS) | none — `Host` preserved; the same edge as the backoffice host. Read and write timeouts 90 s |
-| any other path on the host `KINETIX_BACKOFFICE_ONION_HOST`, onion listener `:8081` only | `kinetix-backoffice:8080` | HTTP (plaintext from `tor`, no staff gate, no JWT, no CORS) | none — the backoffice's static app |
+| `/bff/*` on the host `KINETIX_BACKOFFICE_ONION_HOST`, onion TLS listener `:8444` only | `kinetix-edge-service:8080` | HTTPS (from `tor`, the onion's own certificate, no staff gate, no JWT, no CORS) | none — `Host` preserved; the same edge as the backoffice host. Read and write timeouts 90 s |
+| any other path on the host `KINETIX_BACKOFFICE_ONION_HOST`, onion TLS listener `:8444` only | `kinetix-backoffice:8080` | HTTPS (from `tor`, the onion's own certificate, no staff gate, no JWT, no CORS) | none — the backoffice's static app |
+| any path on the host `KINETIX_BACKOFFICE_ONION_HOST`, plaintext `:8081` | Internal Static Response | HTTP (from `tor`) | `308` to `https://<onion address><path and query>`, no port; nothing is forwarded |
 
 "(JWT)" means Kong's `jwt` plugin checks the token's signature and `exp` before the request leaves the
 gateway; every service still verifies the token itself. Kong reads the token from `Authorization: Bearer`
@@ -110,16 +111,21 @@ it: `CLAUDE.md`, "The internal listener and the twins".
 
 ---
 
-## 🧅 Onion listener (plaintext, for `tor`)
+## 🧅 Onion listeners (HTTPS on 8444, a redirect on 8081, for `tor`)
 
-The backoffice is reached over Tor (infra `docs/BACKOFFICE.md` §10): a `tor` container runs the onion service with
-client authorization and forwards it to `http://kinetix-api-gateway:8081`. Two routes answer there, both on the host
+The backoffice is reached over Tor (infra `docs/BACKOFFICE.md` §10, and `docs/BACKOFFICE-ONION-TLS.md` for HTTPS): a
+`tor` container runs the onion service with client authorization and forwards its port 443 to
+`kinetix-api-gateway:8444` and its port 80 to `kinetix-api-gateway:8081`. Two routes answer on the host
 `KINETIX_BACKOFFICE_ONION_HOST`: `edge-backoffice-onion-route` (`/bff/` to the edge, `Host` kept) and
-`backoffice-app-onion-route` (everything else to the app). Each starts with a guard that answers
-`421 Misdirected Request` unless the request arrived in plaintext on port 8081, and carries the per-address limit;
-there is no staff gate, because Kong only ever sees the `tor` container's address. On 8081 every other host gets
-Kong's `426` or a twin's `421`, so the listener exposes the backoffice and nothing else. Why: `CLAUDE.md`, "The onion
-listener".
+`backoffice-app-onion-route` (everything else to the app). Each starts with a guard: HTTPS that arrived on 8444 is
+served, with the onion's own certificate (a Kong `certificates` entity whose `snis` is the onion address, issued by
+our own CA, so the public listener's certificate is untouched); plaintext that arrived on 8081 gets
+`308 Location: https://<onion address><path and query>` and is not forwarded; anything else gets
+`421 Misdirected Request`. Both carry the per-address limit; there is no staff gate, because Kong only ever sees the
+`tor` container's address. On 8081 every other host gets Kong's `426` or a twin's `421`; on 8444 another host is
+served exactly as on 8443. HTTPS adds no secrecy to Tor; it makes the onion a secure origin, so passkeys and the
+`Secure` session cookie work in Chrome and KeePassXC. Why, and what each listener exposes: `CLAUDE.md`, "The onion
+listeners".
 
 ---
 
@@ -174,6 +180,8 @@ docker run -p 8443:8443 \
   -e KINETIX_BACKOFFICE_HOST=backoffice.localhost:8443 \
   -e KINETIX_SELLER_HOST=seller.localhost:8443 \
   -e KINETIX_BACKOFFICE_ONION_HOST="$(cat onion-hostname)" \
+  -e KINETIX_BACKOFFICE_ONION_TLS_CERT_B64="$(base64 < onion.crt)" \
+  -e KINETIX_BACKOFFICE_ONION_TLS_KEY_B64="$(base64 < onion.key)" \
   -e KINETIX_GATEWAY_TLS_CERT_B64="$(base64 < server.pem)" \
   -e KINETIX_GATEWAY_TLS_KEY_B64="$(base64 < server.key)" \
   kinetix-api-gateway

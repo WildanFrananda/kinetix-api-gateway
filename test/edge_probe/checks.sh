@@ -8,6 +8,7 @@ TOKEN="$(cat /work/token)"
 SCHEME=https
 NAME="$API_HOST"
 PORT=8443
+CA=/work/tls.pem
 pass=0
 fail=0
 
@@ -25,6 +26,7 @@ target() {
   SCHEME="$1"
   NAME="$2"
   PORT="$3"
+  CA="${4:-/work/tls.pem}"
 }
 
 call() {
@@ -36,9 +38,10 @@ call() {
     set -- -H "Authorization: Bearer $TOKEN" "$@"
   fi
 
+  : > /tmp/body
   status="$(curl -sS --path-as-is --max-time 10 \
-    --cacert /work/tls.pem \
-    --resolve "$NAME:$PORT:$GATEWAY_ADDRESS" \
+    --cacert "$CA" \
+    --connect-to "$NAME:$PORT:$GATEWAY_ADDRESS:$PORT" \
     -D /tmp/headers \
     -o /tmp/body \
     -w '%{http_code}' \
@@ -639,23 +642,47 @@ reaches_onion_edge() {
   path="$2"
   shift 2
   call "$method" "$path" none -H "Host: $ONION_NAME" "$@"
-  got="$(jq -r '"\(.request.port) \(.request.method) \(.request.path) \(.request.headers.host)"' /tmp/body 2>/dev/null)"
-  want="8080 $method $path $ONION_NAME"
+  got="$(jq -r '"\(.request.port) \(.request.method) \(.request.path) \(.request.headers.host) \(.request.headers["x-forwarded-proto"])"' /tmp/body 2>/dev/null)"
+  want="8080 $method $path $ONION_NAME https"
   if [ "$status" = 200 ] \
     && [ "$got" = "$want" ] \
     && [ "$(header x-ratelimit-limit-minute)" = 100 ] \
     && [ -z "$(header access-control-allow-origin)" ]; then
-    ok "onion $method $path -> the edge :8080 with the onion Host kept, the per-address limit, no CORS, no staff gate"
+    ok "onion https:8444 $method $path -> the edge :8080 with the onion Host kept, X-Forwarded-Proto https, the per-address limit, no CORS, no staff gate"
   else
-    bad "onion $method $path -> $status '$got' limit '$(header x-ratelimit-limit-minute)' acao '$(header access-control-allow-origin)' (wanted '$want')"
+    bad "onion https:8444 $method $path -> $status '$got' limit '$(header x-ratelimit-limit-minute)' acao '$(header access-control-allow-origin)' (wanted '$want')"
+  fi
+}
+
+redirected() {
+  method="$1"
+  path="$2"
+  shift 2
+  call "$method" "$path" none "$@"
+  want="https://$ONION_NAME$path"
+  if [ "$status" = 308 ] \
+    && [ "$(header location)" = "$want" ] \
+    && [ "$(jq -r 'has("request")' /tmp/body 2>/dev/null)" != true ] \
+    && ! grep -qi -e openresty -e kong -e nginx /tmp/body \
+    && [ -z "$(header x-ratelimit-limit-minute)" ]; then
+    ok "onion http:8081 $method $path -> 308 to https://<the onion address>$path, nothing forwarded, no engine named"
+  else
+    bad "onion http:8081 $method $path -> $status Location '$(header location)' $(head -c 200 /tmp/body) (wanted 308 to https://<the onion address>$path, no port)"
   fi
 }
 
 onion_face() {
-  target http onion-listener.probe.invalid 8081
+  target https "$ONION_NAME" 8444 /work/onion-ca.pem
+  call GET /bff/session none
+  if [ "$status" = 200 ]; then
+    ok "TLS on 8444 for the onion address presents its own certificate: it verifies against the onion CA"
+  else
+    bad "TLS on 8444 for the onion address did not verify against the onion CA: $(head -c 200 /tmp/body)"
+  fi
+
   reaches_onion_edge GET /bff/session
   reaches_onion_edge POST /bff/login -H "Content-Type: application/json" -d '{}'
-  reaches_onion_edge POST /bff/2fa/verify -H "Origin: http://$ONION_NAME"
+  reaches_onion_edge POST /bff/2fa/verify -H "Origin: https://$ONION_NAME"
   reaches_onion_edge GET /bff/api/v1/orders/ORD-1
   reaches_onion_edge DELETE /bff/api/v1/notifications/devices
 
@@ -682,9 +709,25 @@ onion_face() {
   upper="$(printf '%s' "$ONION_NAME" | tr '[:lower:]' '[:upper:]')"
   call GET /bff/session none -H "Host: $upper"
   if [ "$status" != 200 ] && [ "$(jq -r 'has("request")' /tmp/body 2>/dev/null)" != true ]; then
-    ok "the onion address in capitals on the onion listener -> $status, neither the edge nor the app"
+    ok "the onion address in capitals on 8444 -> $status, neither the edge nor the app"
   else
-    bad "the onion address in capitals on the onion listener reached an upstream: $(head -c 200 /tmp/body)"
+    bad "the onion address in capitals on 8444 reached an upstream: $(head -c 200 /tmp/body)"
+  fi
+
+  target http "$ONION_NAME" 8081
+  redirected GET / -H "Host: $ONION_NAME"
+  redirected GET /bff/session -H "Host: $ONION_NAME"
+  redirected POST /bff/login -H "Host: $ONION_NAME" -H "Content-Type: application/json" -d '{}'
+  redirected GET "/api/v1/products?page=2&q=a%20b" -H "Host: $ONION_NAME"
+  redirected GET /bff/../api/v1/products -H "Host: $ONION_NAME"
+  redirected GET /assets/index.js -H "Host: $ONION_NAME:80"
+  redirected GET /bff/session -H "Host: $ONION_NAME:8081"
+
+  call GET /bff/session none -H "Host: $upper"
+  if [ "$status" != 200 ] && [ "$status" != 308 ] && [ "$(jq -r 'has("request")' /tmp/body 2>/dev/null)" != true ]; then
+    ok "the onion address in capitals on 8081 -> $status, neither a redirect nor an upstream"
+  else
+    bad "the onion address in capitals on 8081 -> $status $(head -c 200 /tmp/body)"
   fi
 
   target http "$API_HOST" 8081
@@ -705,6 +748,20 @@ onion_face() {
   misdirected_answer GET /bff/session "the onion address"
   call GET / none -H "Host: $ONION_NAME"
   misdirected_answer GET / "the onion address"
+
+  target https "$ONION_NAME" 8443 /work/onion-ca.pem
+  call GET /bff/session none -H "Host: $ONION_NAME"
+  misdirected_answer GET /bff/session "the onion address, SNI included"
+  call GET / none -H "Host: $ONION_NAME"
+  misdirected_answer GET / "the onion address, SNI included"
+
+  target https "$API_HOST" 8444
+  misdirected GET /api/v1/products none -H "Host: $INTERNAL_HOST"
+  refused GET /api/v1/orders/sagas/needs-attention none
+  reaches GET /api/v1/products none 8000 /api/products
+  target https "$BACKOFFICE_NAME" 8444
+  refused GET /bff/session none
+  refused GET / none
 }
 
 metrics_after() {
@@ -733,12 +790,14 @@ metrics_after() {
       else
         bad "$served of $EXPECTED_TWINS twins served a plaintext request"
       fi
-      onions="$(grep 'route="[^"]*-onion-route"' /tmp/metrics | grep 'code="200"' | sed 's/.*route="\([^"]*\)".*/\1/' | sort -u | tr '\n' ' ')"
-      if [ "$onions" = "backoffice-app-onion-route edge-backoffice-onion-route " ]; then
-        ok "both onion routes served the onion listener"
-      else
-        bad "the onion routes that served the onion listener: '$onions'"
-      fi ;;
+      for code in 200 308; do
+        onions="$(grep 'route="[^"]*-onion-route"' /tmp/metrics | grep "code=\"$code\"" | sed 's/.*route="\([^"]*\)".*/\1/' | sort -u | tr '\n' ' ')"
+        if [ "$onions" = "backoffice-app-onion-route edge-backoffice-onion-route " ]; then
+          ok "both onion routes answered $code (200 served on 8444, 308 redirected on 8081)"
+        else
+          bad "the onion routes that answered $code: '$onions'"
+        fi
+      done ;;
   esac
 }
 
