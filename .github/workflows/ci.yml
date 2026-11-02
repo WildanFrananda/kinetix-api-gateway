@@ -131,8 +131,8 @@ jobs:
             fi
           done
           gates="$(grep -c 'name: ip-restriction' kong.yml)"
-          if [ "$gates" != 10 ]; then
-            echo "expected the staff gate on 10 routes, found $gates"; exit 1
+          if [ "$gates" != 11 ]; then
+            echo "expected the staff gate on 11 routes, found $gates"; exit 1
           fi
           if ! grep -qF "body: '{\"status\":\"ok\"}'" kong.yml; then
             echo "/health answers more than its status"; exit 1
@@ -140,7 +140,7 @@ jobs:
           if ! grep -qF 'Canonical: https://api.ci.invalid/.well-known/security.txt' kong.yml; then
             echo "security.txt does not name the host it is served from"; exit 1
           fi
-          echo "the staff gate needs a range, refuses an everyone range and covers 10 routes; /health and security.txt are as published"
+          echo "the staff gate needs a range, refuses an everyone range and covers 11 routes; /health and security.txt are as published"
 
       - name: The browser-app hosts and the internal twins
         run: |

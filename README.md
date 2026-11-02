@@ -43,6 +43,8 @@ The **Kinetix API Gateway** is the single entry point for all external client RE
 | `GET /api/v1/proofs/liabilities/{epoch\|latest}`, `GET /api/v1/proofs/evidence/orders/{order}`, `GET /api/v1/proofs/evidence/reviews/{review}` | `kinetix-notary-service:8010` | HTTP REST (JWT) | none — an account holder's own proofs |
 | `GET`/`POST /api/v1/proofs/registrations` | `kinetix-notary-service:8010` | HTTP REST (JWT) | none — GET serves the registration template, POST registers the address an account holder will request statements from |
 | `POST /api/v1/seal/courier-credentials`, `GET /api/v1/seal/courier-credentials/{id}` | `kinetix-seal-service:8012` | HTTP REST (JWT) | none — a courier asks for a credential of their own facts and follows its issuance; seal checks the token's use and role |
+| `GET /api/v1/seal/predicates`, `GET /api/v1/seal/predicates/{id}` | `kinetix-seal-service:8012` | HTTP REST (public) | none — the approved predicates and their registry rows, for holders and verifiers; no token |
+| `POST /api/v1/seal/predicates`, `DELETE /api/v1/seal/predicates/{id}` | `kinetix-seal-service:8012` | HTTP REST (JWT, staff network only) | none — an admin approves or withdraws a predicate; seal checks the admin role |
 | `POST`/`DELETE /api/v1/notifications/devices`, `POST /api/v1/notifications/devices/verify` | `kinetix-notification-service:8004` | HTTP REST (JWT) | none — registers, verifies or forgets the caller's own handset for push; the principal is the token's `sub` |
 | any path on the host `KINETIX_STORAGE_HOST` | `kinetix-object-store:9000` | HTTP (presigned) | none — `Host` preserved for the signature, 16 MB per request; rendered only when the host is set |
 | `/bff/*` on the host `KINETIX_BACKOFFICE_HOST` | `kinetix-edge-service:8080` | HTTP (staff network only, no JWT, no CORS) | none — `Host` preserved; the edge's browser token handler. Read and write timeouts 90 s |
@@ -85,11 +87,12 @@ The paths only an admin may call are served by dedicated routes that also check 
 | `/api/v1/warehouse/bins`, `/api/v1/warehouse/stock_receipts`, `/api/v1/warehouse/stock_adjustments` | warehouse |
 | `/api/v1/matching/drivers` and below, `/api/v1/matching/backoffice` and below | matching |
 | `/api/v1/orders/sagas` and below, `GET /api/v1/orders/returns/needs-attention`, `POST /api/v1/orders/returns/{returnNumber}/reject`, `POST /api/v1/orders/{orderNumber}/complete` | order |
+| `POST /api/v1/seal/predicates`, `DELETE /api/v1/seal/predicates/{id}` (`GET` stays public) | seal |
 | `/bff/` and below on `KINETIX_BACKOFFICE_HOST` (the backoffice's sign-in and every call it makes) | edge |
 | every other path on `KINETIX_BACKOFFICE_HOST` (the backoffice's own pages and assets) | backoffice |
 
 From any other address they answer `403 {"message":"This route is not available from your network","request_id":"…"}`.
-On identity's and matching's, a request without a valid token gets the `jwt` plugin's `401` first. Staff reach
+On identity's, matching's and seal's, a request without a valid token gets the `jwt` plugin's `401` first. Staff reach
 them over WireGuard to the server's tunnel address with the public host name
 (`curl --resolve <api host>:443:<tunnel address> https://<api host>/…`); `CLAUDE.md` explains why Kong then sees
 the tunnel address, and what a proxy in front would change. Endpoints that a user or an admin may call are not

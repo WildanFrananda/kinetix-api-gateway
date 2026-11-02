@@ -247,6 +247,8 @@ POST /api/v1/orders/returns/RET-1/reject none 8001 /api/v1/orders/returns/RET-1/
 POST /api/v1/orders/Returns/RET-1/Reject none 8001 /api/v1/orders/Returns/RET-1/Reject
 POST /api/v1/orders/ORD-1/complete none 8001 /api/v1/orders/ORD-1/complete
 POST /api/v1/orders/ORD-1/Complete none 8001 /api/v1/orders/ORD-1/Complete
+POST /api/v1/seal/predicates token 8012 /api/v1/seal/predicates
+DELETE /api/v1/seal/predicates/0b0e7f6e-1b7a-4c5e-9c1e-1f2a3b4c5d6e token 8012 /api/v1/seal/predicates/0b0e7f6e-1b7a-4c5e-9c1e-1f2a3b4c5d6e
 ROUTES
 }
 
@@ -284,6 +286,8 @@ GET /api/v1/proofs/liabilities/latest token 8010 /api/v1/proofs/liabilities/late
 GET /api/v1/proofs/registrations token 8010 /api/v1/proofs/registrations
 POST /api/v1/seal/courier-credentials token 8012 /api/v1/seal/courier-credentials
 GET /api/v1/seal/courier-credentials/0b0e7f6e-1b7a-4c5e-9c1e-1f2a3b4c5d6e token 8012 /api/v1/seal/courier-credentials/0b0e7f6e-1b7a-4c5e-9c1e-1f2a3b4c5d6e
+GET /api/v1/seal/predicates none 8012 /api/v1/seal/predicates
+GET /api/v1/seal/predicates/0b0e7f6e-1b7a-4c5e-9c1e-1f2a3b4c5d6e none 8012 /api/v1/seal/predicates/0b0e7f6e-1b7a-4c5e-9c1e-1f2a3b4c5d6e
 POST /api/v1/notifications/devices token 8004 /api/v1/notifications/devices
 ROUTES
 }

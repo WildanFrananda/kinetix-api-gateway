@@ -661,6 +661,24 @@ services {
         strip_path = false
         plugins { jwtPlugin }
       })
+
+      ...api(new Dynamic {
+        name = "seal-predicates-route"
+        paths { "/api/v1/seal/predicates" }
+        methods { "GET"; "OPTIONS" }
+        strip_path = false
+      })
+
+      ...api(new Dynamic {
+        name = "seal-predicates-staff-route"
+        paths { "/api/v1/seal/predicates" }
+        methods { "POST"; "DELETE" }
+        strip_path = false
+        plugins {
+          jwtPlugin
+          staffGate
+        }
+      })
     }
   }
 
