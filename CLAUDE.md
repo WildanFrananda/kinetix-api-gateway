@@ -59,9 +59,10 @@ Hardening item 3, option (a), ruled 2026-10-22. Each admin-only path has a dedic
 | `warehouse-bins-staff-route`, `-stock-receipts-`, `-stock-adjustments-` | `/api/v1/warehouse/{bins,stock_receipts,stock_adjustments}` | `warehouse-bins`, `warehouse-stock-receipts`, `warehouse-stock-adjustments` |
 | `matching-drivers-staff-route`, `matching-backoffice-staff-route` | `/api/v1/matching/drivers`, `/api/v1/matching/backoffice` | `matching-drivers`, `matching-backoffice` (with `jwt`) |
 | `order-staff-route` | `~/api/v1/orders/(?i)sagas`, `~/api/v1/orders/(?i)returns/needs-attention`, `~/api/v1/orders/(?i)returns/[^/]+/reject`, `~/api/v1/orders/[^/]+/(?i)complete` | `order-service` |
+| `seal-predicates-staff-route` | `/api/v1/seal/predicates` for `POST`, `DELETE` | `seal-service` (with `jwt`) |
 
 Each staff route keeps what the route it was split from had: the same upstream host and resulting path, the same
-`strip_path`, the same route plugins (`jwt` on identity and matching), the per-route `rate-limiting` (and `cors` when
+`strip_path`, the same route plugins (`jwt` on identity, matching and seal), the per-route `rate-limiting` (and `cors` when
 origins are configured) that every TLS route carries, and the global `correlation-id` and `prometheus` plugins. `PATCH` on categories is fenced although catalog serves none, so a
 future one is admin-only from its first day. Mixed endpoints, which a user or an admin may call
 (`GET /api/v1/users/{id}/profile`, `GET /api/v1/sellers/{id}/application`, `GET /api/v1/orders/{orderId}`,
@@ -70,7 +71,9 @@ limits and admin two-factor, and on the admin audit.
 
 **Why each route wins.** Kong 3.9's `traditional_compatible` router ranks a route with `methods` above one
 without, then a regex path above a prefix, then a longer prefix above a shorter one. Catalog's staff route
-shares the public route's path and wins by its methods, so `GET` still goes to the public route. Identity's and
+shares the public route's path and wins by its methods, so `GET` still goes to the public route. Seal's two
+predicate routes share one path and list disjoint methods (`GET` and `OPTIONS` public, `POST` and `DELETE`
+gated), so neither outranks the other: a method picks its route. Identity's and
 order's staff routes win by a longer prefix or a regex inside their own services. Warehouse's and matching's
 public routes strip `/api/v1/warehouse` and `/api/v1/matching`, and Kong strips the whole matched prefix, so a
 staff route there needs its own service whose URL ends in the fenced segment (`…:3000/api/v1/bins`): the
@@ -91,8 +94,8 @@ longer tail is fenced too.
 
 **The answer.** A refused address gets Kong's `403` with `{"message":"This route is not available from your
 network","request_id":"…"}`. The message is fixed because Kong's default names the caller's address. `jwt`
-(priority 1450) runs before `ip-restriction` (990) and Kong OSS cannot reorder plugins, so on identity's and
-matching's staff routes a request without a valid token gets `jwt`'s 401 first and one with a valid token gets
+(priority 1450) runs before `ip-restriction` (990) and Kong OSS cannot reorder plugins, so on identity's,
+matching's and seal's staff routes a request without a valid token gets `jwt`'s 401 first and one with a valid token gets
 the 403. A CORS preflight is answered by `cors` (2000) before the gate; it carries no credentials and reveals
 nothing. The refusal happens before `rate-limiting` (910), so refused requests are not counted.
 
@@ -388,7 +391,7 @@ sockets carry no `jwt` plugin (matching reads its own `?token=`), so this does n
 ## Gates
 
 - CI `config-valid` (GitHub and GitLab, paired): Pkl renders with and without origins and storage, refuses a
-  contradiction, refuses a render without a staff range or with an everyone range, puts the gate on ten routes (the nine above and the backoffice app),
+  contradiction, refuses a render without a staff range or with an everyone range, puts the gate on eleven routes (the ten above and the backoffice app),
   `/health` and `security.txt` as above; refuses a render without any of the three browser-app hosts, with `:443`,
   with an onion address that is not one (a scheme, a port, capitals, a v2 length, a DNS name), or with a host
   name used twice (the onion address as the backoffice's TLS host included); refuses a render without the onion's
