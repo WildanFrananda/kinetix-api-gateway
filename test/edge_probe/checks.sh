@@ -282,6 +282,8 @@ POST /api/v1/payment/gateway/midtrans/notifications none 8003 /api/v1/payment/ga
 GET /api/v1/payment/wallet/customer/balance token 8003 /api/v1/payment/wallet/customer/balance
 GET /api/v1/proofs/liabilities/latest token 8010 /api/v1/proofs/liabilities/latest
 GET /api/v1/proofs/registrations token 8010 /api/v1/proofs/registrations
+POST /api/v1/seal/courier-credentials token 8012 /api/v1/seal/courier-credentials
+GET /api/v1/seal/courier-credentials/0b0e7f6e-1b7a-4c5e-9c1e-1f2a3b4c5d6e token 8012 /api/v1/seal/courier-credentials/0b0e7f6e-1b7a-4c5e-9c1e-1f2a3b4c5d6e
 POST /api/v1/notifications/devices token 8004 /api/v1/notifications/devices
 ROUTES
 }

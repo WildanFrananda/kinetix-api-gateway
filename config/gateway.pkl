@@ -651,6 +651,20 @@ services {
   }
 
   new {
+    name = "seal-service"
+    url = "http://kinetix-seal-service:8012"
+    routes {
+      ...api(new Dynamic {
+        name = "seal-courier-credentials-route"
+        paths { "/api/v1/seal/courier-credentials" }
+        methods { "GET"; "POST"; "OPTIONS" }
+        strip_path = false
+        plugins { jwtPlugin }
+      })
+    }
+  }
+
+  new {
     name = "notification-service"
     url = "http://kinetix-notification-service:8004"
     routes {
