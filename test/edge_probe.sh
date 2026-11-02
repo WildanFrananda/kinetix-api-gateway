@@ -27,6 +27,7 @@ UPSTREAMS=(
   kinetix-review-service
   kinetix-payment-service
   kinetix-notary-service
+  kinetix-seal-service
   kinetix-notification-service
   kinetix-object-store
   kinetix-edge-service
@@ -34,7 +35,7 @@ UPSTREAMS=(
 )
 UPSTREAM_PORTS="0.0.0.0:5000, 0.0.0.0:8000, 0.0.0.0:8088, 0.0.0.0:3000, 0.0.0.0:4000, 0.0.0.0:6000"
 UPSTREAM_PORTS="$UPSTREAM_PORTS, 0.0.0.0:8001, 0.0.0.0:8002, 0.0.0.0:8003, 0.0.0.0:8010, 0.0.0.0:8004"
-UPSTREAM_PORTS="$UPSTREAM_PORTS, 0.0.0.0:9000, 0.0.0.0:8080"
+UPSTREAM_PORTS="$UPSTREAM_PORTS, 0.0.0.0:8012, 0.0.0.0:9000, 0.0.0.0:8080"
 
 work="$(mktemp -d)"
 chmod 0755 "$work"

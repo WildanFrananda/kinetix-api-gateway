@@ -42,6 +42,7 @@ The **Kinetix API Gateway** is the single entry point for all external client RE
 | `/ws/v1/matching/merchant`, `/ws/v1/matching/merchant/websocket` | `kinetix-matching-service:4000/merchant/websocket` | WebSockets | Forwarded `Upgrade`; matching checks the access token and the seller role. The second path is the one phoenix.js dials. Also on the internal listener, for the edge. Read and write timeouts 90 s |
 | `GET /api/v1/proofs/liabilities/{epoch\|latest}`, `GET /api/v1/proofs/evidence/orders/{order}`, `GET /api/v1/proofs/evidence/reviews/{review}` | `kinetix-notary-service:8010` | HTTP REST (JWT) | none — an account holder's own proofs |
 | `GET`/`POST /api/v1/proofs/registrations` | `kinetix-notary-service:8010` | HTTP REST (JWT) | none — GET serves the registration template, POST registers the address an account holder will request statements from |
+| `POST /api/v1/seal/courier-credentials`, `GET /api/v1/seal/courier-credentials/{id}` | `kinetix-seal-service:8012` | HTTP REST (JWT) | none — a courier asks for a credential of their own facts and follows its issuance; seal checks the token's use and role |
 | `POST`/`DELETE /api/v1/notifications/devices`, `POST /api/v1/notifications/devices/verify` | `kinetix-notification-service:8004` | HTTP REST (JWT) | none — registers, verifies or forgets the caller's own handset for push; the principal is the token's `sub` |
 | any path on the host `KINETIX_STORAGE_HOST` | `kinetix-object-store:9000` | HTTP (presigned) | none — `Host` preserved for the signature, 16 MB per request; rendered only when the host is set |
 | `/bff/*` on the host `KINETIX_BACKOFFICE_HOST` | `kinetix-edge-service:8080` | HTTP (staff network only, no JWT, no CORS) | none — `Host` preserved; the edge's browser token handler. Read and write timeouts 90 s |
@@ -55,7 +56,7 @@ The **Kinetix API Gateway** is the single entry point for all external client RE
 "(JWT)" means Kong's `jwt` plugin checks the token's signature and `exp` before the request leaves the
 gateway; every service still verifies the token itself. Kong reads the token from `Authorization: Bearer`
 only: a token in a `?jwt=` query or in a cookie is not read, and the request gets `401
-{"message":"Unauthorized"}` with `WWW-Authenticate: Bearer`, as if it carried none. The notary and notification routes accept only the
+{"message":"Unauthorized"}` with `WWW-Authenticate: Bearer`, as if it carried none. The notary, seal and notification routes accept only the
 methods listed, plus `OPTIONS`: a method a route does not list gets Kong's 404 `no Route matched`, not the
 service's 405. `OPTIONS` is listed because a route that refuses it answers a browser's preflight with that
 404 before the `cors` plugin runs; the `jwt` plugins skip `OPTIONS` (`run_on_preflight = false`).
