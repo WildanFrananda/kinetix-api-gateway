@@ -663,6 +663,38 @@ services {
       })
 
       ...api(new Dynamic {
+        name = "seal-holder-route"
+        paths { "/api/v1/seal/holder" }
+        methods { "GET" }
+        strip_path = false
+      })
+
+      ...api(new Dynamic {
+        name = "seal-presentations-route"
+        paths { "/api/v1/seal/presentations" }
+        methods { "POST"; "OPTIONS" }
+        strip_path = false
+        plugins {
+          new {
+            name = "rate-limiting"
+            config {
+              minute = 20
+              policy = "local"
+              fault_tolerant = true
+              limit_by = "ip"
+            }
+          }
+        }
+      })
+
+      ...api(new Dynamic {
+        name = "seal-registry-route"
+        paths { "/api/v1/seal/registry" }
+        methods { "GET" }
+        strip_path = false
+      })
+
+      ...api(new Dynamic {
         name = "seal-predicates-route"
         paths { "/api/v1/seal/predicates" }
         methods { "GET"; "OPTIONS" }
