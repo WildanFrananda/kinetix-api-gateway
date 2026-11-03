@@ -688,6 +688,20 @@ services {
       })
 
       ...api(new Dynamic {
+        name = "seal-presentation-reads-route"
+        paths { "/api/v1/seal/presentations" }
+        methods { "GET" }
+        strip_path = false
+      })
+
+      ...api(new Dynamic {
+        name = "seal-verify-route"
+        paths { "/api/v1/seal/verify" }
+        methods { "GET" }
+        strip_path = false
+      })
+
+      ...api(new Dynamic {
         name = "seal-registry-route"
         paths { "/api/v1/seal/registry" }
         methods { "GET" }

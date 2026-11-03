@@ -291,6 +291,9 @@ GET /api/v1/seal/holder none 8012 /api/v1/seal/holder
 GET /api/v1/seal/holder/0b0e7f6e1b7a4c5e9c1e1f2a3b4c5d6e0b0e7f6e1b7a4c5e9c1e1f2a3b4c5d6e/holder.js none 8012 /api/v1/seal/holder/0b0e7f6e1b7a4c5e9c1e1f2a3b4c5d6e0b0e7f6e1b7a4c5e9c1e1f2a3b4c5d6e/holder.js
 GET /api/v1/seal/registry/snapshot none 8012 /api/v1/seal/registry/snapshot
 POST /api/v1/seal/presentations none 8012 /api/v1/seal/presentations
+GET /api/v1/seal/presentations/0b0e7f6e1b7a4c5e9c1e1f2a3b4c5d6e0b0e7f6e1b7a4c5e9c1e1f2a3b4c5d6e none 8012 /api/v1/seal/presentations/0b0e7f6e1b7a4c5e9c1e1f2a3b4c5d6e0b0e7f6e1b7a4c5e9c1e1f2a3b4c5d6e
+GET /api/v1/seal/verify none 8012 /api/v1/seal/verify
+GET /api/v1/seal/verify/assets/0b0e7f6e1b7a4c5e9c1e1f2a3b4c5d6e0b0e7f6e1b7a4c5e9c1e1f2a3b4c5d6e/verifier.js none 8012 /api/v1/seal/verify/assets/0b0e7f6e1b7a4c5e9c1e1f2a3b4c5d6e0b0e7f6e1b7a4c5e9c1e1f2a3b4c5d6e/verifier.js
 GET /api/v1/seal/predicates/0b0e7f6e-1b7a-4c5e-9c1e-1f2a3b4c5d6e none 8012 /api/v1/seal/predicates/0b0e7f6e-1b7a-4c5e-9c1e-1f2a3b4c5d6e
 POST /api/v1/notifications/devices token 8004 /api/v1/notifications/devices
 ROUTES
