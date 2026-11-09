@@ -34,6 +34,7 @@ def timeouts: {connect_timeout, read_timeout, write_timeout};
 | ($routes | map(select(onion))) as $onions
 | ($routes | map(select((twin | not) and (onion | not)))) as $tls
 | ($tls | map(select(.name as $name | without_twin | any(.[]; . == $name) | not))) as $api
+| [.certificates[]?] as $certificates
 | [
     (if [.plugins[].name] != ["correlation-id", "prometheus"]
       then "the global plugins are \([.plugins[].name]): rate-limiting and cors would reach the twins and /bff/"
@@ -93,10 +94,23 @@ def timeouts: {connect_timeout, read_timeout, write_timeout};
     ($onions[] | select(guard_port != "8444") | "\(.name)'s guard does not serve the onion's TLS port 8444 alone: \(guard_port)"),
     ($onions[] | select(redirect != {port: "8081", status: "308", location: "https://\($onion)"})
       | "\(.name)'s guard does not redirect plaintext on 8081 to https://<the onion address> with 308: \(redirect)"),
-    (if [.certificates[]?] | length != 1 then "\([.certificates[]?] | length) certificates, not the onion's one" else empty end),
-    (.certificates[]? | select(.snis != [{name: $onion}]) | "a certificate is not for the onion host alone: \(.snis)"),
-    (.certificates[]? | select((.cert | contains("-----BEGIN CERTIFICATE-----") | not) or (.key | contains("PRIVATE KEY-----") | not))
-      | "the onion's certificate entity does not carry a PEM certificate and private key"),
+    (if ($certificates | length) != 2
+      then "\($certificates | length) certificates, not the onion's and the backoffice host's"
+      else empty end),
+    (if ($certificates | map(.snis) | sort) != ([[{name: $onion}], [{name: $backoffice}]] | sort)
+      then "the certificates' snis are \($certificates | map(.snis)), not the onion host alone and the backoffice host alone"
+      else empty end),
+    (if ($certificates | map(.id | select(type == "string" and length > 0)) | unique | length) != ($certificates | length)
+      then "the certificates do not each carry their own fixed id: \($certificates | map(.id))"
+      else empty end),
+    (if ($certificates | map(.cert) | unique | length) != ($certificates | length)
+      then "two certificate entities carry the same certificate"
+      else empty end),
+    (if ($certificates | map(.key) | unique | length) != ($certificates | length)
+      then "two certificate entities carry the same private key"
+      else empty end),
+    ($certificates[] | select((.cert | contains("-----BEGIN CERTIFICATE-----") | not) or (.key | contains("PRIVATE KEY-----") | not))
+      | "the certificate entity for \(.snis | map(.name)) does not carry a PEM certificate and private key"),
     ($routes[] | select(onion | not) | select((.hosts // []) | any(.[]; . == $onion))
       | "\(.name) names the onion host, which only the onion routes may"),
     ($routes | route("edge-backoffice-onion-route")

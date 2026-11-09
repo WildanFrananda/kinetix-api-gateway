@@ -19,7 +19,11 @@ hidden staffRanges: List<String(matches(Regex("\(ipv4Range)|\(ipv6Range)")))>(!i
 
 hidden publicApiHost: String(matches(Regex(hostPattern))) = read("prop:publicApiHost")
 
-hidden backofficeHostProp: String(matches(Regex(hostPattern)), !endsWith(":443")) = read("prop:backofficeHost")
+hidden backofficeHostProp: String(
+  matches(Regex(hostPattern)),
+  !endsWith(":443"),
+  !matches(Regex(#"[0-9.]+(:[0-9]+)?"#))
+) = read("prop:backofficeHost")
 hidden sellerHostProp: String(matches(Regex(hostPattern)), !endsWith(":443")) = read("prop:sellerHost")
 hidden backofficeOnionHostProp: String(matches(Regex(#"[a-z2-7]{56}\.onion"#))) = read("prop:backofficeOnionHost")
 
@@ -38,6 +42,18 @@ hidden backofficeOnionTlsKey: String = pemFile(
   read("prop:backofficeOnionTlsKeyFile"),
   "PRIVATE KEY-----",
   "the onion's TLS private key"
+)
+
+hidden backofficeTlsCert: String = pemFile(
+  read("prop:backofficeTlsCertFile"),
+  "-----BEGIN CERTIFICATE-----",
+  "the backoffice host's TLS certificate"
+)
+
+hidden backofficeTlsKey: String = pemFile(
+  read("prop:backofficeTlsKeyFile"),
+  "PRIVATE KEY-----",
+  "the backoffice host's TLS private key"
 )
 
 hidden internalHost: String = "kinetix-api-gateway"
@@ -764,6 +780,15 @@ certificates {
     key = backofficeOnionTlsKey
     snis {
       new { name = backofficeOnionHost }
+    }
+  }
+
+  new {
+    id = "4632fef8-a0d0-4d77-855f-baf3e859dbf8"
+    cert = backofficeTlsCert
+    key = backofficeTlsKey
+    snis {
+      new { name = backofficeHost }
     }
   }
 }

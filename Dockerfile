@@ -19,6 +19,7 @@ COPY config/ .
 # yields a verification key — with a key pair generated here and discarded with this stage.
 RUN set -eu; \
     onion=kinetixgatewaybuildabcdefghijklmnopqrstuvwxyz234567abcde.onion; \
+    backoffice=backoffice.build.invalid; \
     openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out /tmp/throwaway.pem 2>/dev/null; \
     openssl pkey -in /tmp/throwaway.pem -pubout -out /tmp/throwaway-public.pem; \
     openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 1 \
@@ -26,13 +27,20 @@ RUN set -eu; \
                 -addext "subjectAltName=DNS:$onion" \
                 -keyout /tmp/onion.key \
                 -out /tmp/onion.pem 2>/dev/null; \
-    tls="-p backofficeOnionTlsCertFile=/tmp/onion.pem -p backofficeOnionTlsKeyFile=/tmp/onion.key"; \
+    openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 1 \
+                -subj "/CN=$backoffice" \
+                -addext "subjectAltName=DNS:$backoffice" \
+                -keyout /tmp/backoffice.key \
+                -out /tmp/backoffice.pem 2>/dev/null; \
+    onion_tls="-p backofficeOnionTlsCertFile=/tmp/onion.pem -p backofficeOnionTlsKeyFile=/tmp/onion.key"; \
+    backoffice_tls="-p backofficeTlsCertFile=/tmp/backoffice.pem -p backofficeTlsKeyFile=/tmp/backoffice.key"; \
+    tls="$onion_tls $backoffice_tls"; \
     pkl eval -p identityJwtPublicKey="$(cat /tmp/throwaway-public.pem)" \
              -p jwtIssuer=https://identity.build.invalid \
              -p corsOrigins= \
              -p staffRanges=192.0.2.0/24 \
              -p publicApiHost=api.build.invalid \
-             -p backofficeHost=backoffice.build.invalid \
+             -p backofficeHost="$backoffice:8443" \
              -p sellerHost=seller.build.invalid \
              -p backofficeOnionHost="$onion" \
              $tls \
@@ -50,9 +58,12 @@ RUN set -eu; \
       echo "$twins internal twins, $onions onion routes and $guards listener guards"; exit 1; \
     fi; \
     certificates="$(sed -n '/^certificates:/,/^[a-z_]/p' /tmp/kong.yml)"; \
-    if [ "$(printf '%s\n' "$certificates" | grep -c -- '-----BEGIN CERTIFICATE-----')" != 1 ] \
-       || [ "$(printf '%s\n' "$certificates" | grep -cx "  - name: $onion")" != 1 ]; then \
-      echo "the rendered config carries no certificate whose snis is the onion address"; exit 1; \
+    snis="$(printf '%s\n' "$certificates" | grep -- '^  - name: ' | sort | tr '\n' ' ')"; \
+    if [ "$(printf '%s\n' "$certificates" | grep -c -- '-----BEGIN CERTIFICATE-----')" != 2 ] \
+       || [ "$(printf '%s\n' "$certificates" | grep -cF -- "$(sed -n 2p /tmp/onion.pem)")" != 1 ] \
+       || [ "$(printf '%s\n' "$certificates" | grep -cF -- "$(sed -n 2p /tmp/backoffice.pem)")" != 1 ] \
+       || [ "$snis" != "$(printf '  - name: %s\n' "$backoffice" "$onion" | sort | tr '\n' ' ')" ]; then \
+      echo "the rendered config does not carry the onion's and the backoffice host's certificates, each once, under their own snis"; exit 1; \
     fi; \
     refuses() { \
       if pkl eval -p identityJwtPublicKey="$(cat /tmp/throwaway-public.pem)" \
@@ -64,12 +75,14 @@ RUN set -eu; \
         echo "the config rendered with only $*"; exit 1; \
       fi; \
     }; \
-    refuses $tls -p backofficeHost=backoffice.build.invalid -p sellerHost=seller.build.invalid -p backofficeOnionHost="$onion"; \
+    refuses $tls -p backofficeHost="$backoffice" -p sellerHost=seller.build.invalid -p backofficeOnionHost="$onion"; \
     refuses $tls -p staffRanges=192.0.2.0/24 -p sellerHost=seller.build.invalid -p backofficeOnionHost="$onion"; \
-    refuses $tls -p staffRanges=192.0.2.0/24 -p backofficeHost=backoffice.build.invalid -p backofficeOnionHost="$onion"; \
-    refuses $tls -p staffRanges=192.0.2.0/24 -p backofficeHost=backoffice.build.invalid -p sellerHost=seller.build.invalid; \
-    refuses -p staffRanges=192.0.2.0/24 -p backofficeHost=backoffice.build.invalid -p sellerHost=seller.build.invalid -p backofficeOnionHost="$onion"; \
-    rm -f /tmp/throwaway.pem /tmp/throwaway-public.pem /tmp/onion.pem /tmp/onion.key /tmp/kong.yml /tmp/kong-without.yml
+    refuses $tls -p staffRanges=192.0.2.0/24 -p backofficeHost="$backoffice" -p backofficeOnionHost="$onion"; \
+    refuses $tls -p staffRanges=192.0.2.0/24 -p backofficeHost="$backoffice" -p sellerHost=seller.build.invalid; \
+    refuses $backoffice_tls -p staffRanges=192.0.2.0/24 -p backofficeHost="$backoffice" -p sellerHost=seller.build.invalid -p backofficeOnionHost="$onion"; \
+    refuses $onion_tls -p staffRanges=192.0.2.0/24 -p backofficeHost="$backoffice" -p sellerHost=seller.build.invalid -p backofficeOnionHost="$onion"; \
+    refuses $tls -p staffRanges=192.0.2.0/24 -p backofficeHost=192.0.2.1 -p sellerHost=seller.build.invalid -p backofficeOnionHost="$onion"; \
+    rm -f /tmp/throwaway.pem /tmp/throwaway-public.pem /tmp/onion.pem /tmp/onion.key /tmp/backoffice.pem /tmp/backoffice.key /tmp/kong.yml /tmp/kong-without.yml
 
 # Pin the Kong minor rather than `latest`: the gateway is the platform's only published
 # surface, and `latest` means a rebuild can change what terminates every request without a

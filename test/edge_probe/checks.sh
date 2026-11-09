@@ -448,6 +448,40 @@ edge_cases() {
   fi
 }
 
+verifies_against() {
+  curl -sS --max-time 10 \
+    --cacert "$2" \
+    --connect-to "$1:$PORT:$GATEWAY_ADDRESS:$PORT" \
+    -o /dev/null \
+    -w '%{http_code}' \
+    "https://$1:$PORT/" 2>/dev/null
+}
+
+presents_backoffice_certificate() {
+  code="$(verifies_against "$BACKOFFICE_NAME" /work/backoffice-ca.pem)"
+  if [ "$code" != 000 ]; then
+    ok "TLS on $PORT with SNI $BACKOFFICE_NAME verifies against the backoffice CA: the backoffice host's own certificate ($code)"
+  else
+    bad "TLS on $PORT with SNI $BACKOFFICE_NAME does not verify against the backoffice CA"
+  fi
+
+  for other in /work/tls.pem /work/onion-ca.pem; do
+    code="$(verifies_against "$BACKOFFICE_NAME" "$other")"
+    if [ "$code" = 000 ]; then
+      ok "TLS on $PORT with SNI $BACKOFFICE_NAME does not verify against $other: neither the default nor the onion's certificate"
+    else
+      bad "TLS on $PORT with SNI $BACKOFFICE_NAME verified against $other ($code)"
+    fi
+  done
+
+  code="$(verifies_against "$API_HOST" /work/backoffice-ca.pem)"
+  if [ "$code" = 000 ] && [ "$(verifies_against "$API_HOST" /work/tls.pem)" != 000 ]; then
+    ok "TLS on $PORT with SNI $API_HOST still gets the default certificate, not the backoffice host's"
+  else
+    bad "TLS on $PORT with SNI $API_HOST verified against the backoffice CA ($code), or no longer against the default"
+  fi
+}
+
 unrouted_table() {
   cat <<'ROUTES'
 GET / none
@@ -477,7 +511,13 @@ ROUTES
 browser_apps() {
   unrouted_table > /tmp/unrouted_table
   for app in "$BACKOFFICE_NAME" "$SELLER_NAME"; do
-    target https "$app" 8443
+    if [ "$app" = "$BACKOFFICE_NAME" ]; then
+      target https "$app" 8443 /work/backoffice-ca.pem
+      presents_backoffice_certificate
+    else
+      target https "$app" 8443
+    fi
+
     while read -r method path auth; do
       [ -z "$method" ] && continue
       outside_bff "$app" "$method" "$path" "$auth"
@@ -772,7 +812,8 @@ onion_face() {
   misdirected GET /api/v1/products none -H "Host: $INTERNAL_HOST"
   refused GET /api/v1/orders/sagas/needs-attention none
   reaches GET /api/v1/products none 8000 /api/products
-  target https "$BACKOFFICE_NAME" 8444
+  target https "$BACKOFFICE_NAME" 8444 /work/backoffice-ca.pem
+  presents_backoffice_certificate
   refused GET /bff/session none
   refused GET / none
 }
