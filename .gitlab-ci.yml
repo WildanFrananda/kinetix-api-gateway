@@ -65,6 +65,9 @@ config-valid:
       openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 1 \
                   -subj "/CN=$ONION_HOST" -addext "subjectAltName=DNS:$ONION_HOST" \
                   -keyout /tmp/onion.key -out /tmp/onion.pem 2>/dev/null
+      openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 1 \
+                  -subj "/CN=backoffice.ci.invalid" -addext "subjectAltName=DNS:backoffice.ci.invalid" \
+                  -keyout /tmp/backoffice.key -out /tmp/backoffice.pem 2>/dev/null
       render() {
         pkl eval -p identityJwtPublicKey="$(cat /tmp/throwaway-public.pem)" \
                  -p jwtIssuer=https://identity.ci.invalid -p corsOrigins="$1" \
@@ -72,6 +75,7 @@ config-valid:
                  -p backofficeHost=backoffice.ci.invalid:8443 -p sellerHost=seller.ci.invalid \
                  -p backofficeOnionHost="$ONION_HOST" \
                  -p backofficeOnionTlsCertFile=/tmp/onion.pem -p backofficeOnionTlsKeyFile=/tmp/onion.key \
+                 -p backofficeTlsCertFile=/tmp/backoffice.pem -p backofficeTlsKeyFile=/tmp/backoffice.key \
                  -f yaml config/gateway.pkl -o "$2"
       }
       render "https://app.ci.invalid" kong.yml
@@ -92,6 +96,7 @@ config-valid:
                  -p publicApiHost=api.ci.invalid -p backofficeHost=backoffice.ci.invalid:8443 \
                  -p sellerHost=seller.ci.invalid -p backofficeOnionHost="$ONION_HOST" "$@" \
                  -p backofficeOnionTlsCertFile=/tmp/onion.pem -p backofficeOnionTlsKeyFile=/tmp/onion.key \
+                 -p backofficeTlsCertFile=/tmp/backoffice.pem -p backofficeTlsKeyFile=/tmp/backoffice.key \
                  -f yaml config/gateway.pkl -o /tmp/kong-gate.yml 2>/dev/null
       }
       if gate; then
@@ -119,6 +124,7 @@ config-valid:
                  -p jwtIssuer=https://identity.ci.invalid -p corsOrigins= \
                  -p staffRanges=192.0.2.0/24 -p publicApiHost=api.ci.invalid "$@" \
                  -p backofficeOnionTlsCertFile=/tmp/onion.pem -p backofficeOnionTlsKeyFile=/tmp/onion.key \
+                 -p backofficeTlsCertFile=/tmp/backoffice.pem -p backofficeTlsKeyFile=/tmp/backoffice.key \
                  -f yaml config/gateway.pkl -o /tmp/kong-hosts.yml 2>/dev/null
       }
       if hosts -p sellerHost=seller.ci.invalid -p backofficeOnionHost="$ONION_HOST"; then
@@ -146,19 +152,32 @@ config-valid:
           echo "the browser-app hosts '$1' and '$2' were accepted"; exit 1
         fi
       done
+      for address in "192.0.2.1" "198.51.100.7:8443"; do
+        if hosts -p backofficeHost="$address" -p sellerHost=seller.ci.invalid -p backofficeOnionHost="$ONION_HOST"; then
+          echo "the address '$address' was accepted as the backoffice host: TLS sends no address as SNI, and WebAuthn refuses one"; exit 1
+        fi
+      done
+      if ! hosts -p backofficeHost=backoffice.kinetix.internal -p sellerHost=seller.ci.invalid -p backofficeOnionHost="$ONION_HOST"; then
+        echo "the .internal name backoffice.kinetix.internal was refused as the backoffice host"; exit 1
+      fi
+      if [ "$(grep -cx -- '    - backoffice.kinetix.internal' /tmp/kong-hosts.yml)" != 2 ] \
+         || [ "$(grep -cx -- '  - name: backoffice.kinetix.internal' /tmp/kong-hosts.yml)" != 1 ]; then
+        echo "backoffice.kinetix.internal is not the host of the backoffice's two routes and the SNI of one certificate"; exit 1
+      fi
       pkl eval -p identityJwtPublicKey="$(cat /tmp/throwaway-public.pem)" \
                -p jwtIssuer=https://identity.ci.invalid -p corsOrigins="https://app.ci.invalid" \
                -p staffRanges=192.0.2.0/24 -p publicApiHost=api.ci.invalid \
                -p backofficeHost=backoffice.ci.invalid:8443 -p sellerHost=seller.ci.invalid \
                -p backofficeOnionHost="$ONION_HOST" \
                -p backofficeOnionTlsCertFile=/tmp/onion.pem -p backofficeOnionTlsKeyFile=/tmp/onion.key \
+               -p backofficeTlsCertFile=/tmp/backoffice.pem -p backofficeTlsKeyFile=/tmp/backoffice.key \
                -p storageHost=storage.ci.invalid -f json config/gateway.pkl -o /tmp/kong.json
       broken="$(jq -r --arg backoffice backoffice.ci.invalid --arg seller seller.ci.invalid --arg onion "$ONION_HOST" \
                      -f test/config_invariants.jq /tmp/kong.json)"
       if [ -n "$broken" ]; then
         printf '%s\n' "$broken"; exit 1
       fi
-      echo "/bff/ on the two browser-app hosts goes to the edge, the rest of the backoffice host to its app, nothing else answers there; the onion address has its two guarded routes, served over TLS on 8444 with its own certificate and redirected from 8081; every API route has its plaintext twin"
+      echo "/bff/ on the two browser-app hosts goes to the edge, the rest of the backoffice host to its app, nothing else answers there; the onion address has its two guarded routes, served over TLS on 8444 with its own certificate and redirected from 8081; the backoffice host is a name, never an address, and a .internal one renders; every API route has its plaintext twin"
     - |
       onion_tls() {
         pkl eval -p identityJwtPublicKey="$(cat /tmp/throwaway-public.pem)" \
@@ -166,6 +185,7 @@ config-valid:
                  -p staffRanges=192.0.2.0/24 -p publicApiHost=api.ci.invalid \
                  -p backofficeHost=backoffice.ci.invalid:8443 -p sellerHost=seller.ci.invalid \
                  -p backofficeOnionHost="$ONION_HOST" "$@" \
+                 -p backofficeTlsCertFile=/tmp/backoffice.pem -p backofficeTlsKeyFile=/tmp/backoffice.key \
                  -f yaml config/gateway.pkl -o /tmp/kong-onion-tls.yml 2>/tmp/onion-tls.err
       }
       if onion_tls; then
@@ -187,6 +207,38 @@ config-valid:
         echo "refusing a private key as the onion's certificate printed the key"; exit 1
       fi
       echo "the onion's certificate and key are required, each must be what it claims, and a refusal never prints the key"
+    - |
+      backoffice_tls() {
+        pkl eval -p identityJwtPublicKey="$(cat /tmp/throwaway-public.pem)" \
+                 -p jwtIssuer=https://identity.ci.invalid -p corsOrigins= \
+                 -p staffRanges=192.0.2.0/24 -p publicApiHost=api.ci.invalid \
+                 -p backofficeHost=backoffice.ci.invalid:8443 -p sellerHost=seller.ci.invalid \
+                 -p backofficeOnionHost="$ONION_HOST" "$@" \
+                 -p backofficeOnionTlsCertFile=/tmp/onion.pem -p backofficeOnionTlsKeyFile=/tmp/onion.key \
+                 -f yaml config/gateway.pkl -o /tmp/kong-backoffice-tls.yml 2>/tmp/backoffice-tls.err
+      }
+      if backoffice_tls; then
+        echo "the config rendered without the backoffice host's certificate and key"; exit 1
+      fi
+      if backoffice_tls -p backofficeTlsCertFile=/tmp/backoffice.pem; then
+        echo "the config rendered without the backoffice host's key"; exit 1
+      fi
+      if backoffice_tls -p backofficeTlsKeyFile=/tmp/backoffice.key; then
+        echo "the config rendered without the backoffice host's certificate"; exit 1
+      fi
+      if backoffice_tls -p backofficeTlsCertFile=/tmp/backoffice.pem -p backofficeTlsKeyFile=/tmp/backoffice.pem; then
+        echo "a certificate was accepted as the backoffice host's private key"; exit 1
+      fi
+      if backoffice_tls -p backofficeTlsCertFile=/tmp/backoffice.key -p backofficeTlsKeyFile=/tmp/backoffice.key; then
+        echo "a private key was accepted as the backoffice host's certificate"; exit 1
+      fi
+      if ! grep -qF "the file given as the backoffice host's TLS certificate does not hold one" /tmp/backoffice-tls.err; then
+        echo "refusing a private key as the backoffice host's certificate did not say so: $(tail -n 3 /tmp/backoffice-tls.err)"; exit 1
+      fi
+      if grep -qF "$(sed -n 2p /tmp/backoffice.key)" /tmp/backoffice-tls.err; then
+        echo "refusing a private key as the backoffice host's certificate printed the key"; exit 1
+      fi
+      echo "the backoffice host's certificate and key are required, each must be what it claims, and a refusal never prints the key"
     - deck file validate kong.yml
     - deck file validate kong-no-cors.yml
     - deck file validate /tmp/kong.json

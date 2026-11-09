@@ -198,6 +198,7 @@ echo
 echo "── 6. The browser-app hosts: /bff/ to the edge, the backoffice host's other paths to its app, the seller host's to a 404"
 base_authority="${BASE#https://}"
 base_authority="${base_authority%%/*}"
+BACKOFFICE_CA_FILE="${BACKOFFICE_CA_FILE:-$HERE/../kinetix-infrastructure/pki/backoffice/ca.crt}"
 for variable in KINETIX_BACKOFFICE_HOST KINETIX_SELLER_HOST; do
   app="$(docker exec "$GW" printenv "$variable" 2>/dev/null || true)"
   if [ -z "$app" ]; then
@@ -208,7 +209,32 @@ for variable in KINETIX_BACKOFFICE_HOST KINETIX_SELLER_HOST; do
   app_port="${app##*:}"
   [ "$app_port" = "$app" ] && app_port=443
   route=(--connect-to "$app_name:$app_port:$base_authority")
-  body="$("${CURL[@]}" -s --max-time 10 "${route[@]}" -w '\n%{http_code}' "https://$app_name:$app_port/api/v1/products")"
+  app_curl=("${CURL[@]}")
+  certificate="the gateway's certificate"
+  if [ "$variable" = KINETIX_BACKOFFICE_HOST ]; then
+    if [ ! -s "$BACKOFFICE_CA_FILE" ]; then
+      bad "no backoffice CA at $BACKOFFICE_CA_FILE: run bin/kinetix backoffice tls dev in kinetix-infrastructure, or set BACKOFFICE_CA_FILE"
+      continue
+    fi
+
+    app_curl=(curl --cacert "$BACKOFFICE_CA_FILE")
+    certificate="the backoffice host's certificate"
+    code="$("${app_curl[@]}" -s -o /dev/null -w '%{http_code}' --max-time 10 "${route[@]}" "https://$app_name:$app_port/")"
+    if [ "$code" != 000 ]; then
+      ok "$app presents the backoffice host's own certificate, and it verifies against the backoffice CA"
+    else
+      bad "$app's certificate does not verify against $BACKOFFICE_CA_FILE (does the gateway run with KINETIX_BACKOFFICE_TLS_CERT_B64 for $app_name?)"
+    fi
+
+    code="$("${CURL[@]}" -s -o /dev/null -w '%{http_code}' --max-time 10 "${route[@]}" "https://$app_name:$app_port/")"
+    if [ "$code" = 000 ]; then
+      ok "$app does not present the public listener's default certificate"
+    else
+      bad "$app verified against the gateway CA ($code): the default certificate answers its SNI, not the backoffice host's"
+    fi
+  fi
+
+  body="$("${app_curl[@]}" -s --max-time 10 "${route[@]}" -w '\n%{http_code}' "https://$app_name:$app_port/api/v1/products")"
   code="${body##*$'\n'}"
   body="${body%$'\n'*}"
   if [ "$variable" = KINETIX_BACKOFFICE_HOST ]; then
@@ -219,14 +245,14 @@ for variable in KINETIX_BACKOFFICE_HOST KINETIX_SELLER_HOST; do
     elif [ "$code" = 502 ] || [ "$code" = 503 ] || [ "$code" = 504 ]; then
       bad "$app/api/v1/products -> $code: kinetix-backoffice is not reachable (is it running?)"
     else
-      bad "$app/api/v1/products -> $code $body (wanted the backoffice app; is $app_name on the gateway's certificate?)"
+      bad "$app/api/v1/products -> $code $body (wanted the backoffice app; is $app_name on $certificate?)"
     fi
   elif [ "$code" = 404 ] && printf '%s' "$body" | grep -qF '"message":"Not found"'; then
     ok "$app/api/v1/products -> 404: no API route answers on this host"
   else
-    bad "$app/api/v1/products -> $code $body (wanted the browser-app host's 404; is $app_name on the gateway's certificate?)"
+    bad "$app/api/v1/products -> $code $body (wanted the browser-app host's 404; is $app_name on $certificate?)"
   fi
-  body="$("${CURL[@]}" -s --max-time 10 "${route[@]}" -w '\n%{http_code}' "https://$app_name:$app_port/bff/session")"
+  body="$("${app_curl[@]}" -s --max-time 10 "${route[@]}" -w '\n%{http_code}' "https://$app_name:$app_port/bff/session")"
   code="${body##*$'\n'}"
   body="${body%$'\n'*}"
   case "$code" in

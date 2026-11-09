@@ -7,8 +7,8 @@ The **Kinetix API Gateway** is the single entry point for all external client RE
 ## 🏛️ Stack & Architecture
 
 - **Gateway Engine**: **Kong Gateway (DB-less Mode)**. The public listener is `:8443`, TLS only. A plaintext listener on `:8000` serves only the edge's calls on the Docker network; a TLS listener on `:8444` serves the backoffice's onion address for the `tor` container, and a plaintext listener on `:8081` only redirects that address to HTTPS. None of the three is ever published (see "Internal listener" and "Onion listeners" below). `KONG_PROXY_LISTEN` is `0.0.0.0:8443 ssl, 0.0.0.0:8000, 0.0.0.0:8081, 0.0.0.0:8444 ssl`, and Kong's admin API is off (`KONG_ADMIN_LISTEN=off`): its default listener holds `127.0.0.1:8444`.
-- **Configuration Engine**: **Apple Pkl (`config/gateway.pkl`)** rendered to `/usr/local/kong/declarative/kong.yml` by `bin/entrypoint.sh` **when the container starts**, from `KINETIX_IDENTITY_JWT_PUBLIC_KEY_B64`, `KINETIX_JWT_ISSUER`, `KINETIX_GATEWAY_CORS_ORIGINS`, `KINETIX_GATEWAY_STAFF_RANGES`, `KINETIX_PUBLIC_API_HOST`, `KINETIX_BACKOFFICE_HOST`, `KINETIX_BACKOFFICE_ONION_HOST`, `KINETIX_BACKOFFICE_ONION_TLS_CERT_B64`, `KINETIX_BACKOFFICE_ONION_TLS_KEY_B64` and `KINETIX_SELLER_HOST` (and the optional `KINETIX_STORAGE_HOST`). The image carries no key, issuer, origin, address range, host or certificate, so one digest runs in every environment.
-- **TLS**: `KINETIX_GATEWAY_TLS_CERT_FILE` + `_KEY_FILE` (production, Let's Encrypt on disk) or `KINETIX_GATEWAY_TLS_CERT_B64` + `_KEY_B64` (the lab, from the SOPS store) — exactly one pair. The onion address has its own certificate, `KINETIX_BACKOFFICE_ONION_TLS_CERT_B64` + `_KEY_B64` (base64 PEM, issued by our own CA, from the store), required, served to the onion address's SNI only; the entrypoint refuses to start when it is missing, is not a PEM certificate and private key, or does not name `KINETIX_BACKOFFICE_ONION_HOST`, and Kong refuses a key that is not the certificate's.
+- **Configuration Engine**: **Apple Pkl (`config/gateway.pkl`)** rendered to `/usr/local/kong/declarative/kong.yml` by `bin/entrypoint.sh` **when the container starts**, from `KINETIX_IDENTITY_JWT_PUBLIC_KEY_B64`, `KINETIX_JWT_ISSUER`, `KINETIX_GATEWAY_CORS_ORIGINS`, `KINETIX_GATEWAY_STAFF_RANGES`, `KINETIX_PUBLIC_API_HOST`, `KINETIX_BACKOFFICE_HOST`, `KINETIX_BACKOFFICE_TLS_CERT_B64`, `KINETIX_BACKOFFICE_TLS_KEY_B64`, `KINETIX_BACKOFFICE_ONION_HOST`, `KINETIX_BACKOFFICE_ONION_TLS_CERT_B64`, `KINETIX_BACKOFFICE_ONION_TLS_KEY_B64` and `KINETIX_SELLER_HOST` (and the optional `KINETIX_STORAGE_HOST`). The image carries no key, issuer, origin, address range, host or certificate, so one digest runs in every environment.
+- **TLS**: `KINETIX_GATEWAY_TLS_CERT_FILE` + `_KEY_FILE` (production, Let's Encrypt on disk) or `KINETIX_GATEWAY_TLS_CERT_B64` + `_KEY_B64` (the lab, from the SOPS store) — exactly one pair. The onion address has its own certificate, `KINETIX_BACKOFFICE_ONION_TLS_CERT_B64` + `_KEY_B64` (base64 PEM, issued by our own CA, from the store), required, served to the onion address's SNI only; the entrypoint refuses to start when it is missing, is not a PEM certificate and private key, or does not name `KINETIX_BACKOFFICE_ONION_HOST`, and Kong refuses a key that is not the certificate's. The backoffice host has its own certificate the same way, `KINETIX_BACKOFFICE_TLS_CERT_B64` + `_KEY_B64` (base64 PEM, from a second CA of our own, name-constrained to that host), required, served to the backoffice host's SNI only (its name without the port); the entrypoint refuses to start when it is missing, is not a PEM certificate and private key, or does not name `KINETIX_BACKOFFICE_HOST`. See "Backoffice over WireGuard, by name" below.
 - **Security & Plugins**:
   - CORS from `KINETIX_GATEWAY_CORS_ORIGINS`, never with credentials, on every TLS route except the browser apps' `/bff/`. Empty leaves the `cors` plugin out, because Kong's plugin with no origins answers `*`.
   - Rate Limiting (`rate-limiting` plugin, 100 req/min per address and per route; Midtrans' callback 600) on every TLS route, none on the internal twins.
@@ -52,9 +52,9 @@ The **Kinetix API Gateway** is the single entry point for all external client RE
 | `POST /api/v1/seal/predicates`, `DELETE /api/v1/seal/predicates/{id}` | `kinetix-seal-service:8012` | HTTP REST (JWT, staff network only) | none — an admin approves or withdraws a predicate; seal checks the admin role |
 | `POST`/`DELETE /api/v1/notifications/devices`, `POST /api/v1/notifications/devices/verify` | `kinetix-notification-service:8004` | HTTP REST (JWT) | none — registers, verifies or forgets the caller's own handset for push; the principal is the token's `sub` |
 | any path on the host `KINETIX_STORAGE_HOST` | `kinetix-object-store:9000` | HTTP (presigned) | none — `Host` preserved for the signature, 16 MB per request; rendered only when the host is set |
-| `/bff/*` on the host `KINETIX_BACKOFFICE_HOST` | `kinetix-edge-service:8080` | HTTP (staff network only, no JWT, no CORS) | none — `Host` preserved; the edge's browser token handler. Read and write timeouts 90 s |
+| `/bff/*` on the host `KINETIX_BACKOFFICE_HOST` | `kinetix-edge-service:8080` | HTTPS (the backoffice host's own certificate, staff network only, no JWT, no CORS) | none — `Host` preserved; the edge's browser token handler. Read and write timeouts 90 s |
 | `/bff/*` on the host `KINETIX_SELLER_HOST` | `kinetix-edge-service:8080` | HTTP and WebSockets (no JWT, no CORS) | none — `Host` preserved. Read and write timeouts 90 s: the edge holds the merchant socket with 90 s idle timeouts |
-| any other path on the host `KINETIX_BACKOFFICE_HOST` | `kinetix-backoffice:8080` | HTTP (staff network only, no JWT, no CORS) | none — the backoffice's static app (`kinetix-backoffice`); no API route answers on its origin |
+| any other path on the host `KINETIX_BACKOFFICE_HOST` | `kinetix-backoffice:8080` | HTTPS (the backoffice host's own certificate, staff network only, no JWT, no CORS) | none — the backoffice's static app (`kinetix-backoffice`); no API route answers on its origin |
 | any other path on the host `KINETIX_SELLER_HOST` | Internal Static Response | HTTP | `404 {"message":"Not found"}` — no API route answers on a browser app's origin |
 | `/bff/*` on the host `KINETIX_BACKOFFICE_ONION_HOST`, onion TLS listener `:8444` only | `kinetix-edge-service:8080` | HTTPS (from `tor`, the onion's own certificate, no staff gate, no JWT, no CORS) | none — `Host` preserved; the same edge as the backoffice host. Read and write timeouts 90 s |
 | any other path on the host `KINETIX_BACKOFFICE_ONION_HOST`, onion TLS listener `:8444` only | `kinetix-backoffice:8080` | HTTPS (from `tor`, the onion's own certificate, no staff gate, no JWT, no CORS) | none — the backoffice's static app |
@@ -138,6 +138,23 @@ listeners".
 
 ---
 
+## 🔑 Backoffice over WireGuard, by name
+
+The backoffice's other face is `KINETIX_BACKOFFICE_HOST`, reached over the WireGuard tunnel when Tor is down (infra
+`docs/BACKOFFICE-TUNNEL-NAME.md`). It used to be the server's tunnel address, and WebAuthn refuses an IP address as a
+relying party, so passkeys never worked there. It is now a name: `backoffice.kinetix.internal` in production (`.internal`
+is reserved for private use; no public DNS record, each staff device maps it to the tunnel address in `/etc/hosts`) and
+`backoffice.localhost:8443` in the lab. The gateway refuses an address as the backoffice host.
+
+Its certificate is a second Kong `certificates` entity, `snis` = the backoffice host without its port, issued by a CA of
+our own name-constrained to that host (no public CA issues for `.internal`, and a public certificate would publish the
+name in Certificate Transparency logs). The public listener's default certificate and the onion's are untouched. The
+backoffice host's routes are unchanged: `/bff/` to the edge with `Host` kept, everything else to the app, both behind the
+staff gate. Staff import that CA's certificate in the browser they use over WireGuard. Why, and how it is tested:
+`CLAUDE.md`, "The backoffice host's own certificate".
+
+---
+
 ## 🌐 Browser Access (CORS)
 
 When `KINETIX_GATEWAY_CORS_ORIGINS` names origins, the `cors` plugin lets a page read these response headers
@@ -187,6 +204,8 @@ docker run -p 8443:8443 \
   -e KINETIX_GATEWAY_STAFF_RANGES=172.17.0.1/32 \
   -e KINETIX_PUBLIC_API_HOST=localhost:8443 \
   -e KINETIX_BACKOFFICE_HOST=backoffice.localhost:8443 \
+  -e KINETIX_BACKOFFICE_TLS_CERT_B64="$(base64 < backoffice.crt)" \
+  -e KINETIX_BACKOFFICE_TLS_KEY_B64="$(base64 < backoffice.key)" \
   -e KINETIX_SELLER_HOST=seller.localhost:8443 \
   -e KINETIX_BACKOFFICE_ONION_HOST="$(cat onion-hostname)" \
   -e KINETIX_BACKOFFICE_ONION_TLS_CERT_B64="$(base64 < onion.crt)" \

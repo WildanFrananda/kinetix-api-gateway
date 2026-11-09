@@ -73,6 +73,11 @@ onion_key="$(base64 < "$work/onion.key" | tr -d '\n')"
 onion_other_key="$(base64 < "$work/onion-other.key" | tr -d '\n')"
 onion_key_line="$(sed -n 2p "$work/onion.key")"
 onion_cert_line="$(sed -n 2p "$work/onion.pem")"
+backoffice_cert="$(base64 < "$work/backoffice.pem" | tr -d '\n')"
+backoffice_key="$(base64 < "$work/backoffice.key" | tr -d '\n')"
+backoffice_other_key="$(base64 < "$work/backoffice-other.key" | tr -d '\n')"
+backoffice_key_line="$(sed -n 2p "$work/backoffice.key")"
+backoffice_cert_line="$(sed -n 2p "$work/backoffice.pem")"
 
 failures=0
 
@@ -90,12 +95,17 @@ refuses_to_start() {
     -e KINETIX_GATEWAY_TLS_KEY_B64="$tls_key" \
     -e KINETIX_BACKOFFICE_ONION_TLS_CERT_B64="$onion_cert" \
     -e KINETIX_BACKOFFICE_ONION_TLS_KEY_B64="$onion_key" \
+    -e KINETIX_BACKOFFICE_TLS_CERT_B64="$backoffice_cert" \
+    -e KINETIX_BACKOFFICE_TLS_KEY_B64="$backoffice_key" \
     "$@" \
     "$IMAGE" kong config parse /usr/local/kong/declarative/kong.yml 2>&1)"; then
     echo "  FAIL  the gateway started $label"
     failures=$((failures + 1))
   elif printf '%s' "$output" | grep -qF -e "$onion_key_line" -e "$onion_cert_line"; then
     echo "  FAIL  the gateway refused to start $label, and printed the onion's certificate or key"
+    failures=$((failures + 1))
+  elif printf '%s' "$output" | grep -qF -e "$backoffice_key_line" -e "$backoffice_cert_line"; then
+    echo "  FAIL  the gateway refused to start $label, and printed the backoffice host's certificate or key"
     failures=$((failures + 1))
   elif printf '%s' "$output" | grep -q "$expected"; then
     echo "  ok    the gateway refuses to start $label"
@@ -151,6 +161,12 @@ refuses_to_start "with an onion address that is not one" "Type constraint" \
   -e KINETIX_BACKOFFICE_HOST="$BACKOFFICE_NAME:8443" \
   -e KINETIX_SELLER_HOST="$SELLER_NAME" \
   -e KINETIX_BACKOFFICE_ONION_HOST="http://$ONION_NAME"
+refuses_to_start "with an address as the backoffice host" "Type constraint" \
+  -e KINETIX_GATEWAY_STAFF_RANGES="$STAFF_PREFIX.0/24" \
+  -e KINETIX_PUBLIC_API_HOST="$API_HOST" \
+  -e KINETIX_BACKOFFICE_HOST="$STAFF_PREFIX.10:8443" \
+  -e KINETIX_SELLER_HOST="$SELLER_NAME" \
+  -e KINETIX_BACKOFFICE_ONION_HOST="$ONION_NAME"
 
 hosts=(
   -e KINETIX_GATEWAY_STAFF_RANGES="$STAFF_PREFIX.0/24"
@@ -183,6 +199,37 @@ refuses_to_start "with a certificate for other hosts on the onion" "is not a cer
 refuses_to_start "with a key that is not the onion certificate's" "certificate does not match key" \
   "${hosts[@]}" \
   -e KINETIX_BACKOFFICE_ONION_TLS_KEY_B64="$onion_other_key"
+
+echo "── the gateway fails fast without the backoffice host's certificate, or with one that is not"
+refuses_to_start "without the backoffice host's certificate" "KINETIX_BACKOFFICE_TLS_CERT_B64 is required" \
+  "${hosts[@]}" \
+  -e KINETIX_BACKOFFICE_TLS_CERT_B64=
+refuses_to_start "without the backoffice host's key" "KINETIX_BACKOFFICE_TLS_KEY_B64 is required" \
+  "${hosts[@]}" \
+  -e KINETIX_BACKOFFICE_TLS_KEY_B64=
+refuses_to_start "with the backoffice host's key given as its certificate" "KINETIX_BACKOFFICE_TLS_CERT_B64 did not decode to a PEM certificate" \
+  "${hosts[@]}" \
+  -e KINETIX_BACKOFFICE_TLS_CERT_B64="$backoffice_key"
+refuses_to_start "with a backoffice certificate that is not base64" "KINETIX_BACKOFFICE_TLS_CERT_B64 did not decode to a PEM certificate" \
+  "${hosts[@]}" \
+  -e KINETIX_BACKOFFICE_TLS_CERT_B64="not base64 at all"
+refuses_to_start "with the backoffice host's certificate given as its key" "KINETIX_BACKOFFICE_TLS_KEY_B64 did not decode to a PEM private key" \
+  "${hosts[@]}" \
+  -e KINETIX_BACKOFFICE_TLS_KEY_B64="$backoffice_cert"
+refuses_to_start "with the onion's certificate on the backoffice host" "is not a certificate for KINETIX_BACKOFFICE_HOST" \
+  "${hosts[@]}" \
+  -e KINETIX_BACKOFFICE_TLS_CERT_B64="$onion_cert" \
+  -e KINETIX_BACKOFFICE_TLS_KEY_B64="$onion_key"
+refuses_to_start "with the public certificate on the backoffice host" "is not a certificate for KINETIX_BACKOFFICE_HOST" \
+  "${hosts[@]}" \
+  -e KINETIX_BACKOFFICE_TLS_CERT_B64="$tls_cert" \
+  -e KINETIX_BACKOFFICE_TLS_KEY_B64="$tls_key"
+refuses_to_start "with a backoffice host its certificate does not name" "is not a certificate for KINETIX_BACKOFFICE_HOST" \
+  "${hosts[@]}" \
+  -e KINETIX_BACKOFFICE_HOST="other-$BACKOFFICE_NAME:8443"
+refuses_to_start "with a key that is not the backoffice certificate's" "certificate does not match key" \
+  "${hosts[@]}" \
+  -e KINETIX_BACKOFFICE_TLS_KEY_B64="$backoffice_other_key"
 
 docker network create --subnet "$STAFF_PREFIX.0/24" "$RUN-staff" >/dev/null
 docker network create --subnet "$OUTSIDE_PREFIX.0/24" "$RUN-outside" >/dev/null
@@ -222,6 +269,8 @@ docker run -d --name "$RUN-gateway" \
   -e KINETIX_GATEWAY_TLS_KEY_B64="$tls_key" \
   -e KINETIX_BACKOFFICE_ONION_TLS_CERT_B64="$onion_cert" \
   -e KINETIX_BACKOFFICE_ONION_TLS_KEY_B64="$onion_key" \
+  -e KINETIX_BACKOFFICE_TLS_CERT_B64="$backoffice_cert" \
+  -e KINETIX_BACKOFFICE_TLS_KEY_B64="$backoffice_key" \
   -e KONG_STATUS_LISTEN=0.0.0.0:8100 \
   -e KONG_DNS_VALID_TTL=5 \
   "$IMAGE" >/dev/null
