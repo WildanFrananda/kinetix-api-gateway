@@ -51,6 +51,15 @@ payload="$(printf '{"iss":"%s","sub":"probe","exp":%s}' "$ISSUER" "$(($(date +%s
 signature="$(printf '%s.%s' "$header" "$payload" | openssl dgst -sha256 -sign jwt-private.pem -binary | b64url)"
 printf '%s.%s.%s' "$header" "$payload" "$signature" > token
 
+mkdir -p app/tiles
+{
+  printf 'PMTiles\003'
+  openssl rand 98296
+} > app/tiles/basemap.pmtiles
+printf '{"build":"probe","bytes":98304,"maxzoom":15}\n' > app/tiles/basemap.json
+chmod 0755 app app/tiles
+chmod 0644 app/tiles/basemap.pmtiles app/tiles/basemap.json
+
 chmod 0644 \
   jwt-public.pem \
   tls.pem \

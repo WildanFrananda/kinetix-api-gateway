@@ -11,7 +11,7 @@ The **Kinetix API Gateway** is the single entry point for all external client RE
 - **TLS**: `KINETIX_GATEWAY_TLS_CERT_FILE` + `_KEY_FILE` (production, Let's Encrypt on disk) or `KINETIX_GATEWAY_TLS_CERT_B64` + `_KEY_B64` (the lab, from the SOPS store) — exactly one pair. The onion address has its own certificate, `KINETIX_BACKOFFICE_ONION_TLS_CERT_B64` + `_KEY_B64` (base64 PEM, issued by our own CA, from the store), required, served to the onion address's SNI only; the entrypoint refuses to start when it is missing, is not a PEM certificate and private key, or does not name `KINETIX_BACKOFFICE_ONION_HOST`, and Kong refuses a key that is not the certificate's. The backoffice host has its own certificate the same way, `KINETIX_BACKOFFICE_TLS_CERT_B64` + `_KEY_B64` (base64 PEM, from a second CA of our own, name-constrained to that host), required, served to the backoffice host's SNI only (its name without the port); the entrypoint refuses to start when it is missing, is not a PEM certificate and private key, or does not name `KINETIX_BACKOFFICE_HOST`. See "Backoffice over WireGuard, by name" below.
 - **Security & Plugins**:
   - CORS from `KINETIX_GATEWAY_CORS_ORIGINS`, never with credentials, on every TLS route except the browser apps' `/bff/`. Empty leaves the `cors` plugin out, because Kong's plugin with no origins answers `*`.
-  - Rate Limiting (`rate-limiting` plugin, 100 req/min per address and per route; Midtrans' callback 600) on every TLS route, none on the internal twins.
+  - Rate Limiting (`rate-limiting` plugin, 100 req/min per address and per route; Midtrans' callback 600; the backoffice's map tiles, `/tiles/`, 1200) on every TLS route and the onion routes, none on the internal twins.
   - Static Health Check route and `/.well-known/security.txt` (`request-termination` plugin).
   - Admin-only routes accept only the staff network (`ip-restriction`, allowed ranges from `KINETIX_GATEWAY_STAFF_RANGES`, no default). See "Staff-only routes" below and `CLAUDE.md`.
 
@@ -54,9 +54,11 @@ The **Kinetix API Gateway** is the single entry point for all external client RE
 | any path on the host `KINETIX_STORAGE_HOST` | `kinetix-object-store:9000` | HTTP (presigned) | none — `Host` preserved for the signature, 16 MB per request; rendered only when the host is set |
 | `/bff/*` on the host `KINETIX_BACKOFFICE_HOST` | `kinetix-edge-service:8080` | HTTPS (the backoffice host's own certificate, staff network only, no JWT, no CORS) | none — `Host` preserved; the edge's browser token handler. Read and write timeouts 90 s |
 | `/bff/*` on the host `KINETIX_SELLER_HOST` | `kinetix-edge-service:8080` | HTTP and WebSockets (no JWT, no CORS) | none — `Host` preserved. Read and write timeouts 90 s: the edge holds the merchant socket with 90 s idle timeouts |
+| `/tiles/*` on the host `KINETIX_BACKOFFICE_HOST` | `kinetix-backoffice:8080` | HTTPS (the backoffice host's own certificate, staff network only, no JWT, no CORS), 1200 a minute per address | none — the street map's PMTiles archive and its manifest; `Range`, `If-Range`, `If-None-Match` and the app's `206`, `304` and `ETag` pass through as sent |
 | any other path on the host `KINETIX_BACKOFFICE_HOST` | `kinetix-backoffice:8080` | HTTPS (the backoffice host's own certificate, staff network only, no JWT, no CORS) | none — the backoffice's static app (`kinetix-backoffice`); no API route answers on its origin |
 | any other path on the host `KINETIX_SELLER_HOST` | Internal Static Response | HTTP | `404 {"message":"Not found"}` — no API route answers on a browser app's origin |
 | `/bff/*` on the host `KINETIX_BACKOFFICE_ONION_HOST`, onion TLS listener `:8444` only | `kinetix-edge-service:8080` | HTTPS (from `tor`, the onion's own certificate, no staff gate, no JWT, no CORS) | none — `Host` preserved; the same edge as the backoffice host. Read and write timeouts 90 s |
+| `/tiles/*` on the host `KINETIX_BACKOFFICE_ONION_HOST`, onion TLS listener `:8444` only | `kinetix-backoffice:8080` | HTTPS (from `tor`, the onion's own certificate, no staff gate, no JWT, no CORS), 1200 a minute, one budget for every onion visitor | none — the same map archive and manifest, ranges and conditionals as sent |
 | any other path on the host `KINETIX_BACKOFFICE_ONION_HOST`, onion TLS listener `:8444` only | `kinetix-backoffice:8080` | HTTPS (from `tor`, the onion's own certificate, no staff gate, no JWT, no CORS) | none — the backoffice's static app |
 | any path on the host `KINETIX_BACKOFFICE_ONION_HOST`, plaintext `:8081` | Internal Static Response | HTTP (from `tor`) | `308` to `https://<onion address><path and query>`, no port; nothing is forwarded |
 
@@ -94,6 +96,7 @@ The paths only an admin may call are served by dedicated routes that also check 
 | `/api/v1/orders/sagas` and below, `GET /api/v1/orders/returns/needs-attention`, `POST /api/v1/orders/returns/{returnNumber}/reject`, `POST /api/v1/orders/{orderNumber}/complete` | order |
 | `POST /api/v1/seal/predicates`, `DELETE /api/v1/seal/predicates/{id}` (`GET` stays public) | seal |
 | `/bff/` and below on `KINETIX_BACKOFFICE_HOST` (the backoffice's sign-in and every call it makes) | edge |
+| `/tiles/` and below on `KINETIX_BACKOFFICE_HOST` (the street map's archive) | backoffice |
 | every other path on `KINETIX_BACKOFFICE_HOST` (the backoffice's own pages and assets) | backoffice |
 
 From any other address they answer `403 {"message":"This route is not available from your network","request_id":"…"}`.
@@ -124,14 +127,16 @@ it: `CLAUDE.md`, "The internal listener and the twins".
 
 The backoffice is reached over Tor (infra `docs/BACKOFFICE.md` §10, and `docs/BACKOFFICE-ONION-TLS.md` for HTTPS): a
 `tor` container runs the onion service with client authorization and forwards its port 443 to
-`kinetix-api-gateway:8444` and its port 80 to `kinetix-api-gateway:8081`. Two routes answer on the host
-`KINETIX_BACKOFFICE_ONION_HOST`: `edge-backoffice-onion-route` (`/bff/` to the edge, `Host` kept) and
-`backoffice-app-onion-route` (everything else to the app). Each starts with a guard: HTTPS that arrived on 8444 is
+`kinetix-api-gateway:8444` and its port 80 to `kinetix-api-gateway:8081`. Three routes answer on the host
+`KINETIX_BACKOFFICE_ONION_HOST`: `edge-backoffice-onion-route` (`/bff/` to the edge, `Host` kept),
+`backoffice-tiles-onion-route` (`/tiles/`, the map's archive, to the app) and `backoffice-app-onion-route`
+(everything else to the app). Each starts with a guard: HTTPS that arrived on 8444 is
 served, with the onion's own certificate (a Kong `certificates` entity whose `snis` is the onion address, issued by
 our own CA, so the public listener's certificate is untouched); plaintext that arrived on 8081 gets
 `308 Location: https://<onion address><path and query>` and is not forwarded; anything else gets
-`421 Misdirected Request`. Both carry the per-address limit; there is no staff gate, because Kong only ever sees the
-`tor` container's address. On 8081 every other host gets Kong's `426` or a twin's `421`; on 8444 another host is
+`421 Misdirected Request`. Each carries a per-address limit, 100 a minute on `/bff/` and the app and 1200 on
+`/tiles/`, and every onion visitor shares it; there is no staff gate, because Kong only ever sees the `tor`
+container's address. On 8081 every other host gets Kong's `426` or a twin's `421`; on 8444 another host is
 served exactly as on 8443. HTTPS adds no secrecy to Tor; it makes the onion a secure origin, so passkeys and the
 `Secure` session cookie work in Chrome and KeePassXC. Why, and what each listener exposes: `CLAUDE.md`, "The onion
 listeners".
@@ -150,8 +155,23 @@ Its certificate is a second Kong `certificates` entity, `snis` = the backoffice 
 our own name-constrained to that host (no public CA issues for `.internal`, and a public certificate would publish the
 name in Certificate Transparency logs). The public listener's default certificate and the onion's are untouched. The
 backoffice host's routes are unchanged: `/bff/` to the edge with `Host` kept, everything else to the app, both behind the
-staff gate. Staff import that CA's certificate in the browser they use over WireGuard. Why, and how it is tested:
-`CLAUDE.md`, "The backoffice host's own certificate".
+staff gate (and `/tiles/`, below, behind the same gate). Staff import that CA's certificate in the browser they use over
+WireGuard. Why, and how it is tested: `CLAUDE.md`, "The backoffice host's own certificate".
+
+---
+
+## 🗺️ The backoffice's map tiles (`/tiles/`)
+
+The fleet and dispatch screens draw a street map from one PMTiles archive that the backoffice serves itself, from a
+read-only volume (infra `docs/BACKOFFICE-F5.md`): `/tiles/basemap.pmtiles` by range requests and `/tiles/basemap.json`,
+its manifest. On each backoffice face `/tiles/` has a route of its own to the same `kinetix-backoffice:8080`, path
+unchanged: `backoffice-tiles-route` on `KINETIX_BACKOFFICE_HOST`, behind the staff gate, and
+`backoffice-tiles-onion-route` on the onion address, behind the onion guard. Both carry 1200 requests a minute per
+address instead of the app route's 100: map panning comes in bursts of range requests (a zoom from the whole of
+Indonesia to a street is 100 to 250 of them), and on the onion every visitor shares tor's address. `/tiles` without its
+slash, other spellings and the rest of each face stay the app route's, at 100. Kong passes `Range`, `If-Range` and
+`If-None-Match` through and returns the app's `206`, `304` and `ETag` as sent. Why 1200, and how it is tested:
+`CLAUDE.md`, "The backoffice's map tiles".
 
 ---
 

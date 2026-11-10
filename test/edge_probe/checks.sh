@@ -9,6 +9,11 @@ SCHEME=https
 NAME="$API_HOST"
 PORT=8443
 CA=/work/tls.pem
+ARCHIVE=/work/app/tiles/basemap.pmtiles
+ARCHIVE_SIZE="$(wc -c < "$ARCHIVE" | tr -d ' ')"
+MANIFEST=/work/app/tiles/basemap.json
+TILE_LIMIT=1200
+TILE_HOST=""
 pass=0
 fail=0
 
@@ -208,6 +213,145 @@ reaches_edge() {
   else
     bad "$NAME $method $path -> $status '$got' limit '$(header x-ratelimit-limit-minute)' acao '$(header access-control-allow-origin)' (wanted '$want')"
   fi
+}
+
+tile() {
+  tile_path="$1"
+  shift
+  if [ -n "$TILE_HOST" ]; then
+    set -- -H "Host: $TILE_HOST" "$@"
+  fi
+
+  call GET "$tile_path" none -H "Accept-Encoding: gzip, deflate, br" "$@"
+}
+
+from_the_app() {
+  [ "$(header x-echo-host)" = "kinetix-backoffice:8080" ] && [ "$(header x-echo-port)" = 8080 ]
+}
+
+with_tile_limit() {
+  [ "$(header x-ratelimit-limit-minute)" = "$TILE_LIMIT" ]
+}
+
+same_bytes() {
+  if cmp -s "$1" /tmp/body; then
+    echo same
+  else
+    echo differ
+  fi
+}
+
+range_reaches_app() {
+  first="$1"
+  last="$2"
+  tail -c +"$((first + 1))" "$ARCHIVE" | head -c "$((last - first + 1))" > /tmp/want
+  tile /tiles/basemap.pmtiles -H "Range: bytes=$first-$last"
+  if [ "$status" = 206 ] \
+    && [ "$(header content-range)" = "bytes $first-$last/$ARCHIVE_SIZE" ] \
+    && cmp -s /tmp/want /tmp/body \
+    && [ "$(header x-echo-range)" = "bytes=$first-$last" ] \
+    && [ -n "$(header etag)" ] \
+    && [ "$(header etag)" = "$(header x-echo-etag)" ] \
+    && [ "$(header cache-control)" = no-cache ] \
+    && [ -z "$(header content-encoding)" ] \
+    && from_the_app \
+    && with_tile_limit; then
+    ok "$NAME:$PORT Range bytes=$first-$last -> 206 from the app with its bytes, Content-Range and ETag untouched, the map-tile limit ($TILE_LIMIT)"
+  else
+    bad "$NAME:$PORT Range bytes=$first-$last -> $status Content-Range '$(header content-range)' bytes $(same_bytes /tmp/want) echoed Range '$(header x-echo-range)' ETag '$(header etag)' sent '$(header x-echo-etag)' Host '$(header x-echo-host)' port '$(header x-echo-port)' Cache-Control '$(header cache-control)' limit '$(header x-ratelimit-limit-minute)' encoding '$(header content-encoding)'"
+  fi
+}
+
+conditionals_reach_app() {
+  tile /tiles/basemap.pmtiles -H "Range: bytes=0-16383"
+  etag="$(header etag)"
+
+  tile /tiles/basemap.pmtiles -H "Range: bytes=0-16383" -H "If-None-Match: $etag"
+  if [ "$status" = 304 ] \
+    && [ -n "$etag" ] \
+    && [ ! -s /tmp/body ] \
+    && [ "$(header x-echo-if-none-match)" = "$etag" ] \
+    && [ "$(header etag)" = "$etag" ] \
+    && from_the_app \
+    && with_tile_limit; then
+    ok "$NAME:$PORT If-None-Match with the archive's ETag -> 304 from the app, which got the header as sent"
+  else
+    bad "$NAME:$PORT If-None-Match '$etag' -> $status echoed '$(header x-echo-if-none-match)' ETag '$(header etag)' Host '$(header x-echo-host)' (wanted the app's 304)"
+  fi
+
+  tile /tiles/basemap.pmtiles -H "Range: bytes=0-15" -H "If-Range: $etag"
+  if [ "$status" = 206 ] \
+    && [ "$(header content-range)" = "bytes 0-15/$ARCHIVE_SIZE" ] \
+    && [ "$(header x-echo-if-range)" = "$etag" ] \
+    && from_the_app; then
+    ok "$NAME:$PORT If-Range with the archive's ETag -> 206 from the app"
+  else
+    bad "$NAME:$PORT If-Range '$etag' -> $status Content-Range '$(header content-range)' echoed '$(header x-echo-if-range)' (wanted the app's 206)"
+  fi
+
+  tile /tiles/basemap.pmtiles -H "Range: bytes=0-15" -H 'If-Range: "an-older-archive"'
+  if [ "$status" = 200 ] \
+    && [ -z "$(header content-range)" ] \
+    && cmp -s "$ARCHIVE" /tmp/body \
+    && [ "$(header accept-ranges)" = bytes ] \
+    && [ "$(header x-echo-if-range)" = '"an-older-archive"' ] \
+    && from_the_app; then
+    ok "$NAME:$PORT If-Range with another ETag -> 200, the whole archive and Accept-Ranges: bytes from the app: the gateway answers no range itself"
+  else
+    bad "$NAME:$PORT If-Range with another ETag -> $status Content-Range '$(header content-range)' bytes $(same_bytes "$ARCHIVE") echoed '$(header x-echo-if-range)' (wanted the app's 200 with the whole archive)"
+  fi
+}
+
+manifest_reaches_app() {
+  tile /tiles/basemap.json
+  if [ "$status" = 200 ] && cmp -s "$MANIFEST" /tmp/body && from_the_app && with_tile_limit; then
+    ok "$NAME:$PORT /tiles/basemap.json -> 200 from the app, the map-tile limit"
+  else
+    bad "$NAME:$PORT /tiles/basemap.json -> $status bytes $(same_bytes "$MANIFEST") Host '$(header x-echo-host)' limit '$(header x-ratelimit-limit-minute)'"
+  fi
+}
+
+app_route_not_tiles() {
+  if [ -n "$TILE_HOST" ]; then
+    reaches_app GET "$1" none -H "Host: $TILE_HOST"
+  else
+    reaches_app GET "$1" none
+  fi
+
+  if [ "$(header x-ratelimit-limit-minute)" = 100 ]; then
+    ok "$NAME:$PORT GET $1 -> the app route's limit of 100, not the map tiles'"
+  else
+    bad "$NAME:$PORT GET $1 -> limit '$(header x-ratelimit-limit-minute)' (wanted the app route's 100)"
+  fi
+}
+
+tile_burst() {
+  limited=0
+  attempt=0
+  while [ "$attempt" -lt 150 ]; do
+    tile /tiles/basemap.pmtiles -H "Range: bytes=$((attempt * 512))-$((attempt * 512 + 511))"
+    [ "$status" = 206 ] || limited=$((limited + 1))
+    attempt=$((attempt + 1))
+  done
+
+  if [ "$limited" -eq 0 ] && with_tile_limit; then
+    ok "$NAME:$PORT 150 range requests in a burst from one address -> all 206 ($(header x-ratelimit-remaining-minute) of $TILE_LIMIT left this minute), past the app route's 100"
+  else
+    bad "$NAME:$PORT $limited of 150 range requests in a burst were not 206 (limit '$(header x-ratelimit-limit-minute)')"
+  fi
+}
+
+serves_tiles() {
+  range_reaches_app 0 16383
+  range_reaches_app 40000 40999
+  conditionals_reach_app
+  manifest_reaches_app
+  for spelling in /tiles /TILES/basemap.pmtiles /tiles/../assets/index.js /tiles/%2e%2e/assets/index.js; do
+    app_route_not_tiles "$spelling"
+  done
+
+  tile_burst
+  app_route_not_tiles /assets/index.js
 }
 
 admin_table() {
@@ -509,6 +653,14 @@ ROUTES
 }
 
 browser_apps() {
+  target https "$API_HOST" 8443
+  call GET /tiles/basemap.pmtiles none -H "Range: bytes=0-16383"
+  if [ "$status" = 404 ] && [ "$(message)" = "no Route matched with those values" ] && [ -z "$(header x-echo-host)" ]; then
+    ok "$API_HOST /tiles/basemap.pmtiles -> Kong's 404: the map tiles are on the backoffice's faces only"
+  else
+    bad "$API_HOST /tiles/basemap.pmtiles -> $status $(head -c 200 /tmp/body) Host '$(header x-echo-host)' (wanted Kong's 404)"
+  fi
+
   unrouted_table > /tmp/unrouted_table
   for app in "$BACKOFFICE_NAME" "$SELLER_NAME"; do
     if [ "$app" = "$BACKOFFICE_NAME" ]; then
@@ -532,6 +684,10 @@ browser_apps() {
       refused POST /bff/login none -H "X-Forwarded-For: $STAFF_ADDRESS"
       refused POST /bff/login none -H "X-Real-IP: $STAFF_ADDRESS"
       refused GET /bff/session none -H "Host: $app"
+      refused GET /tiles/basemap.pmtiles none -H "Range: bytes=0-16383"
+      refused GET /tiles/basemap.json none
+      refused GET /tiles/basemap.pmtiles none -H "Range: bytes=0-16383" -H "X-Forwarded-For: $STAFF_ADDRESS"
+      refused GET /tiles/basemap.pmtiles none -H "Range: bytes=0-16383" -H "X-Real-IP: $STAFF_ADDRESS"
 
       upper="$(printf '%s' "$app" | tr '[:lower:]' '[:upper:]')"
       call GET /bff/session none -H "Host: $upper:8443"
@@ -565,6 +721,12 @@ browser_apps() {
     else
       bad "$app /bff/session with a bearer -> $status"
     fi
+
+    if [ "$app" = "$BACKOFFICE_NAME" ]; then
+      serves_tiles
+    else
+      unrouted GET /tiles/basemap.pmtiles none -H "Range: bytes=0-16383"
+    fi
   done
 }
 
@@ -587,6 +749,8 @@ misdirected_twins() {
   misdirected_answer GET /bff/session "the onion address"
   call POST /bff/login none -H "Host: $ONION_NAME" -H "Content-Type: application/json" -d '{}'
   misdirected_answer POST /bff/login "the onion address"
+  call GET /tiles/basemap.pmtiles none -H "Host: $ONION_NAME" -H "Range: bytes=0-16383"
+  misdirected_answer GET /tiles/basemap.pmtiles "the onion address"
 
   call POST /api/v1/orders/ORD-1/complete none -H "Host: KINETIX-API-GATEWAY"
   if [ "$status" = 421 ] || { [ "$status" = 403 ] && [ "$SIDE" != staff ]; } || { [ "$status" = 200 ] && [ "$SIDE" = staff ] && listener_matches; }; then
@@ -643,6 +807,7 @@ plaintext_twins() {
     else
       needs_tls GET /bff/session none
       needs_tls GET /api/v1/products none
+      needs_tls GET /tiles/basemap.pmtiles none
     fi
     if [ "$name" != "$STORAGE_HOST" ]; then
       upgrade /ws/v1/matching/merchant/websocket
@@ -716,6 +881,7 @@ redirected() {
   if [ "$status" = 308 ] \
     && [ "$(header location)" = "$want" ] \
     && [ "$(jq -r 'has("request")' /tmp/body 2>/dev/null)" != true ] \
+    && [ -z "$(header x-echo-host)" ] \
     && ! grep -qi -e openresty -e kong -e nginx /tmp/body \
     && [ -z "$(header x-ratelimit-limit-minute)" ]; then
     ok "onion http:8081 $method $path -> 308 to https://<the onion address>$path, nothing forwarded, no engine named"
@@ -759,6 +925,10 @@ onion_face() {
     bad "onion /assets/index.js -> $status limit '$(header x-ratelimit-limit-minute)'"
   fi
 
+  TILE_HOST="$ONION_NAME"
+  serves_tiles
+  TILE_HOST=""
+
   upper="$(printf '%s' "$ONION_NAME" | tr '[:lower:]' '[:upper:]')"
   call GET /bff/session none -H "Host: $upper"
   if [ "$status" != 200 ] && [ "$(jq -r 'has("request")' /tmp/body 2>/dev/null)" != true ]; then
@@ -775,6 +945,8 @@ onion_face() {
   redirected GET /bff/../api/v1/products -H "Host: $ONION_NAME"
   redirected GET /assets/index.js -H "Host: $ONION_NAME:80"
   redirected GET /bff/session -H "Host: $ONION_NAME:8081"
+  redirected GET /tiles/basemap.pmtiles -H "Host: $ONION_NAME" -H "Range: bytes=0-16383"
+  redirected GET /tiles/basemap.json -H "Host: $ONION_NAME"
 
   call GET /bff/session none -H "Host: $upper"
   if [ "$status" != 200 ] && [ "$status" != 308 ] && [ "$(jq -r 'has("request")' /tmp/body 2>/dev/null)" != true ]; then
@@ -789,6 +961,7 @@ onion_face() {
   target http "$BACKOFFICE_NAME" 8081
   needs_tls GET /bff/session none
   needs_tls GET / none
+  needs_tls GET /tiles/basemap.pmtiles none
   target http "$SELLER_NAME" 8081
   needs_tls GET /bff/session none
 
@@ -801,12 +974,16 @@ onion_face() {
   misdirected_answer GET /bff/session "the onion address"
   call GET / none -H "Host: $ONION_NAME"
   misdirected_answer GET / "the onion address"
+  call GET /tiles/basemap.pmtiles none -H "Host: $ONION_NAME" -H "Range: bytes=0-16383"
+  misdirected_answer GET /tiles/basemap.pmtiles "the onion address"
 
   target https "$ONION_NAME" 8443 /work/onion-ca.pem
   call GET /bff/session none -H "Host: $ONION_NAME"
   misdirected_answer GET /bff/session "the onion address, SNI included"
   call GET / none -H "Host: $ONION_NAME"
   misdirected_answer GET / "the onion address, SNI included"
+  call GET /tiles/basemap.pmtiles none -H "Host: $ONION_NAME" -H "Range: bytes=0-16383"
+  misdirected_answer GET /tiles/basemap.pmtiles "the onion address, SNI included"
 
   target https "$API_HOST" 8444
   misdirected GET /api/v1/products none -H "Host: $INTERNAL_HOST"
@@ -816,6 +993,7 @@ onion_face() {
   presents_backoffice_certificate
   refused GET /bff/session none
   refused GET / none
+  refused GET /tiles/basemap.pmtiles none -H "Range: bytes=0-16383"
 }
 
 metrics_after() {
@@ -846,10 +1024,18 @@ metrics_after() {
       fi
       for code in 200 308; do
         onions="$(grep 'route="[^"]*-onion-route"' /tmp/metrics | grep "code=\"$code\"" | sed 's/.*route="\([^"]*\)".*/\1/' | sort -u | tr '\n' ' ')"
-        if [ "$onions" = "backoffice-app-onion-route edge-backoffice-onion-route " ]; then
-          ok "both onion routes answered $code (200 served on 8444, 308 redirected on 8081)"
+        if [ "$onions" = "backoffice-app-onion-route backoffice-tiles-onion-route edge-backoffice-onion-route " ]; then
+          ok "all three onion routes answered $code (200 served on 8444, 308 redirected on 8081)"
         else
           bad "the onion routes that answered $code: '$onions'"
+        fi
+      done
+
+      for code in 206 304; do
+        if grep 'route="backoffice-tiles-onion-route"' /tmp/metrics | grep -q "code=\"$code\""; then
+          ok "the onion's /tiles/ route answered $code on 8444"
+        else
+          bad "the onion's /tiles/ route never answered $code"
         fi
       done ;;
   esac

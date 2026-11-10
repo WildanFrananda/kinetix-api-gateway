@@ -54,8 +54,13 @@ RUN set -eu; \
     twins="$(grep -c -- '-internal$' /tmp/kong.yml)"; \
     onions="$(grep -c -- '-onion-route$' /tmp/kong.yml)"; \
     guards="$(grep -c 'name: pre-function' /tmp/kong.yml)"; \
-    if [ "$twins" -eq 0 ] || [ "$onions" != 2 ] || [ "$((twins + onions))" != "$guards" ]; then \
+    if [ "$twins" -eq 0 ] || [ "$onions" != 3 ] || [ "$((twins + onions))" != "$guards" ]; then \
       echo "$twins internal twins, $onions onion routes and $guards listener guards"; exit 1; \
+    fi; \
+    tiles="$(grep -cx -- '    - /tiles/' /tmp/kong.yml || true)"; \
+    tile_limits="$(grep -cx -- '        minute: 1200' /tmp/kong.yml || true)"; \
+    if [ "$tiles" != 2 ] || [ "$tile_limits" != 2 ]; then \
+      echo "$tiles /tiles/ routes and $tile_limits map-tile limits, not one of each on the backoffice host and on the onion"; exit 1; \
     fi; \
     certificates="$(sed -n '/^certificates:/,/^[a-z_]/p' /tmp/kong.yml)"; \
     snis="$(printf '%s\n' "$certificates" | grep -- '^  - name: ' | sort | tr '\n' ' ')"; \

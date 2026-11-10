@@ -11,3 +11,11 @@ services:
             config:
               status_code: 200
               echo: true
+  - name: tiles
+    url: http://127.0.0.1:8090
+    routes:
+      - name: tiles
+        paths:
+          - /tiles/
+        strip_path: false
+        preserve_host: true

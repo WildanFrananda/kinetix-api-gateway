@@ -194,8 +194,58 @@ POST /api/v1/orders/checkout
 GET /api/v1/orders/my-orders
 PUBLIC
 
+header_of() {
+  tr -d '\r' < "$1" | grep -i "^$2:" | head -n 1 | cut -d' ' -f2-
+}
+
+is_archive() {
+  [ "$(head -c 7 "$1")" = PMTiles ]
+}
+
+tile_answer() {
+  local what="$1" code="$2" headers="$3" body="$4" limit
+  limit="$(header_of "$headers" x-ratelimit-limit-minute)"
+  if [ "$code" = 403 ] && grep -qF "$GATE_MESSAGE" "$body"; then
+    ok "$what -> 403 from the staff gate (this address is outside the staff range)"
+    return
+  fi
+
+  if [ "$limit" != 1200 ]; then
+    bad "$what -> $code with limit '${limit:-none}': not the /tiles/ route (wanted its map-tile limit, 1200)"
+    return
+  fi
+
+  case "$code" in
+    206)
+      if is_archive "$body" && [ -n "$(header_of "$headers" content-range)" ] && [ -n "$(header_of "$headers" etag)" ]; then
+        ok "$what -> 206 through the /tiles/ route (limit 1200): a PMTiles archive's first 16 KiB, with Content-Range and ETag"
+      elif is_archive "$body"; then
+        bad "$what -> 206 without Content-Range '$(header_of "$headers" content-range)' or ETag '$(header_of "$headers" etag)'"
+      else
+        bad "$what -> 206 of $(header_of "$headers" content-type), not a PMTiles archive: the backoffice serves no /tiles/ yet (F5 not deployed)"
+      fi ;;
+    404) bad "$what -> 404 from the backoffice: no basemap in its volume (kinetix-infrastructure: bin/kinetix basemap fetch dev)" ;;
+    502|503|504) bad "$what -> $code: kinetix-backoffice is not reachable (is it running?)" ;;
+    *) bad "$what -> $code through the /tiles/ route (wanted the app's 206)" ;;
+  esac
+}
+
+app_limit_answer() {
+  local what="$1" code="$2" headers="$3" limit
+  limit="$(header_of "$headers" x-ratelimit-limit-minute)"
+  if [ "$code" = 403 ]; then
+    return
+  fi
+
+  if [ "$limit" = 100 ]; then
+    ok "$what -> the app route's own limit, 100 a minute, not the map tiles'"
+  else
+    bad "$what -> $code with limit '${limit:-none}' (wanted the app route's 100)"
+  fi
+}
+
 echo
-echo "── 6. The browser-app hosts: /bff/ to the edge, the backoffice host's other paths to its app, the seller host's to a 404"
+echo "── 6. The browser-app hosts: /bff/ to the edge, /tiles/ and the backoffice host's other paths to its app, the seller host's to a 404"
 base_authority="${BASE#https://}"
 base_authority="${base_authority%%/*}"
 BACKOFFICE_CA_FILE="${BACKOFFICE_CA_FILE:-$HERE/../kinetix-infrastructure/pki/backoffice/ca.crt}"
@@ -272,6 +322,26 @@ for variable in KINETIX_BACKOFFICE_HOST KINETIX_SELLER_HOST; do
     502|503|504) bad "$app/bff/session -> $code: the edge is not reachable" ;;
     *) ok "$app/bff/session -> $code from the edge" ;;
   esac
+
+  if [ "$variable" = KINETIX_BACKOFFICE_HOST ]; then
+    tile_headers="$(mktemp)"
+    tile_body="$(mktemp)"
+    code="$("${app_curl[@]}" -s --max-time 30 "${route[@]}" -H "Range: bytes=0-16383" -D "$tile_headers" -o "$tile_body" -w '%{http_code}' "https://$app_name:$app_port/tiles/basemap.pmtiles")"
+    tile_answer "$app/tiles/basemap.pmtiles (Range: bytes=0-16383)" "$code" "$tile_headers" "$tile_body"
+    if [ "$code" = 206 ] && is_archive "$tile_body"; then
+      etag="$(header_of "$tile_headers" etag)"
+      code="$("${app_curl[@]}" -s --max-time 30 "${route[@]}" -H "Range: bytes=0-16383" -H "If-None-Match: $etag" -o /dev/null -w '%{http_code}' "https://$app_name:$app_port/tiles/basemap.pmtiles")"
+      if [ "$code" = 304 ]; then
+        ok "$app/tiles/basemap.pmtiles with If-None-Match: its ETag -> 304 from the backoffice"
+      else
+        bad "$app/tiles/basemap.pmtiles with If-None-Match: its ETag -> $code (wanted 304)"
+      fi
+    fi
+
+    code="$("${app_curl[@]}" -s --max-time 10 "${route[@]}" -D "$tile_headers" -o /dev/null -w '%{http_code}' "https://$app_name:$app_port/")"
+    app_limit_answer "$app/" "$code" "$tile_headers"
+    rm -f "$tile_headers" "$tile_body"
+  fi
 done
 
 echo
@@ -398,6 +468,60 @@ else
     ok "the onion address /bff/session on 8081 -> 308 to https://<the onion address>/bff/session, no port"
   else
     bad "the onion address /bff/session on 8081 -> $(printf '%s\n' "$answer" | first_status_of) (wanted 308 to the same path over HTTPS)"
+  fi
+
+  over_tls_to() {
+    local out="$1" path="$2" line
+    shift 2
+    {
+      printf 'GET %s HTTP/1.1\r\nHost: %s\r\n' "$path" "$onion"
+      for line in "$@"; do
+        printf '%s\r\n' "$line"
+      done
+      printf 'Connection: close\r\n\r\n'
+    } | docker exec -i "$GW" sh -c 'openssl s_client -quiet -connect 127.0.0.1:8444 -servername "$KINETIX_BACKOFFICE_ONION_HOST" 2>/dev/null' > "$out"
+  }
+  split_response() {
+    python3 - "$1" "$2" "$3" <<'PY'
+import sys
+
+data = open(sys.argv[1], "rb").read()
+head, _, body = data.partition(b"\r\n\r\n")
+open(sys.argv[2], "wb").write(head + b"\r\n")
+open(sys.argv[3], "wb").write(body)
+PY
+  }
+  onion_raw="$(mktemp)"
+  onion_headers="$(mktemp)"
+  onion_body="$(mktemp)"
+
+  over_tls_to "$onion_raw" /tiles/basemap.pmtiles "Range: bytes=0-16383"
+  split_response "$onion_raw" "$onion_headers" "$onion_body"
+  code="$(head -n 1 "$onion_headers" | awk '{ print $2 }')"
+  tile_answer "the onion address /tiles/basemap.pmtiles on 8444 (Range: bytes=0-16383)" "$code" "$onion_headers" "$onion_body"
+  if [ "$code" = 206 ] && is_archive "$onion_body"; then
+    etag="$(header_of "$onion_headers" etag)"
+    over_tls_to "$onion_raw" /tiles/basemap.pmtiles "Range: bytes=0-16383" "If-None-Match: $etag"
+    split_response "$onion_raw" "$onion_headers" "$onion_body"
+    code="$(head -n 1 "$onion_headers" | awk '{ print $2 }')"
+    if [ "$code" = 304 ]; then
+      ok "the onion address /tiles/basemap.pmtiles on 8444 with If-None-Match: its ETag -> 304 from the backoffice"
+    else
+      bad "the onion address /tiles/basemap.pmtiles on 8444 with If-None-Match: its ETag -> '$code' (wanted 304)"
+    fi
+  fi
+
+  over_tls_to "$onion_raw" /
+  split_response "$onion_raw" "$onion_headers" "$onion_body"
+  code="$(head -n 1 "$onion_headers" | awk '{ print $2 }')"
+  app_limit_answer "the onion address / on 8444" "$code" "$onion_headers"
+  rm -f "$onion_raw" "$onion_headers" "$onion_body"
+
+  answer="$(on_listener 8081 /tiles/basemap.pmtiles)"
+  if [ "$(printf '%s\n' "$answer" | first_status_of)" = 308 ] && printf '%s' "$answer" | grep -qF "Location: https://$onion/tiles/basemap.pmtiles"; then
+    ok "the onion address /tiles/basemap.pmtiles on 8081 -> 308 to https://<the onion address>/tiles/basemap.pmtiles, no port"
+  else
+    bad "the onion address /tiles/basemap.pmtiles on 8081 -> $(printf '%s\n' "$answer" | first_status_of) (wanted 308 to the same path over HTTPS)"
   fi
   code="$(on_listener 8000 /bff/session | status_of)"
   if [ "$code" = 421 ]; then

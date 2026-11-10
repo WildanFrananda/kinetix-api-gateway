@@ -108,8 +108,8 @@ config-valid:
         fi
       done
       gates="$(grep -c 'name: ip-restriction' kong.yml)"
-      if [ "$gates" != 11 ]; then
-        echo "expected the staff gate on 11 routes, found $gates"; exit 1
+      if [ "$gates" != 12 ]; then
+        echo "expected the staff gate on 12 routes, found $gates"; exit 1
       fi
       if ! grep -qF "body: '{\"status\":\"ok\"}'" kong.yml; then
         echo "/health answers more than its status"; exit 1
@@ -117,7 +117,7 @@ config-valid:
       if ! grep -qF 'Canonical: https://api.ci.invalid/.well-known/security.txt' kong.yml; then
         echo "security.txt does not name the host it is served from"; exit 1
       fi
-      echo "the staff gate needs a range, refuses an everyone range and covers 11 routes; /health and security.txt are as published"
+      echo "the staff gate needs a range, refuses an everyone range and covers 12 routes; /health and security.txt are as published"
     - |
       hosts() {
         pkl eval -p identityJwtPublicKey="$(cat /tmp/throwaway-public.pem)" \
@@ -160,9 +160,9 @@ config-valid:
       if ! hosts -p backofficeHost=backoffice.kinetix.internal -p sellerHost=seller.ci.invalid -p backofficeOnionHost="$ONION_HOST"; then
         echo "the .internal name backoffice.kinetix.internal was refused as the backoffice host"; exit 1
       fi
-      if [ "$(grep -cx -- '    - backoffice.kinetix.internal' /tmp/kong-hosts.yml)" != 2 ] \
+      if [ "$(grep -cx -- '    - backoffice.kinetix.internal' /tmp/kong-hosts.yml)" != 3 ] \
          || [ "$(grep -cx -- '  - name: backoffice.kinetix.internal' /tmp/kong-hosts.yml)" != 1 ]; then
-        echo "backoffice.kinetix.internal is not the host of the backoffice's two routes and the SNI of one certificate"; exit 1
+        echo "backoffice.kinetix.internal is not the host of the backoffice's three routes and the SNI of one certificate"; exit 1
       fi
       pkl eval -p identityJwtPublicKey="$(cat /tmp/throwaway-public.pem)" \
                -p jwtIssuer=https://identity.ci.invalid -p corsOrigins="https://app.ci.invalid" \
@@ -177,7 +177,7 @@ config-valid:
       if [ -n "$broken" ]; then
         printf '%s\n' "$broken"; exit 1
       fi
-      echo "/bff/ on the two browser-app hosts goes to the edge, the rest of the backoffice host to its app, nothing else answers there; the onion address has its two guarded routes, served over TLS on 8444 with its own certificate and redirected from 8081; the backoffice host is a name, never an address, and a .internal one renders; every API route has its plaintext twin"
+      echo "/bff/ on the two browser-app hosts goes to the edge, /tiles/ on the backoffice host and on the onion to its app with the map-tile limit and the rest of the backoffice host to its app, nothing else answers there; the onion address has its three guarded routes, served over TLS on 8444 with its own certificate and redirected from 8081; the backoffice host is a name, never an address, and a .internal one renders; every API route has its plaintext twin"
     - |
       onion_tls() {
         pkl eval -p identityJwtPublicKey="$(cat /tmp/throwaway-public.pem)" \
