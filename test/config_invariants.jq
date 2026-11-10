@@ -16,9 +16,21 @@ def without_twin: [
   "edge-backoffice-route",
   "edge-seller-route",
   "backoffice-app-route",
+  "backoffice-tiles-route",
   "seller-unrouted-route"
 ];
-def browser_app: .name as $name | ["edge-backoffice-route", "edge-seller-route", "backoffice-app-route", "seller-unrouted-route"] | any(.[]; . == $name);
+def browser_app: .name as $name | [
+  "edge-backoffice-route",
+  "edge-seller-route",
+  "backoffice-app-route",
+  "backoffice-tiles-route",
+  "seller-unrouted-route"
+] | any(.[]; . == $name);
+def tiles: .name as $name | ["backoffice-tiles-route", "backoffice-tiles-onion-route"] | any(.[]; . == $name);
+def limit: [.plugins[]? | select(.name == "rate-limiting") | .config];
+def per_address_limit: [{minute: 100, policy: "local", fault_tolerant: true, limit_by: "ip"}];
+def map_tile_limit: [{minute: 1200, policy: "local", fault_tolerant: true, limit_by: "ip"}];
+def gate: [.plugins[]? | select(.name == "ip-restriction")];
 def route($name): first(.[] | select(.name == $name)) // {};
 def long_lived: .name as $name | ["edge-service", "matching-merchant-socket"] | any(.[]; . == $name);
 def timeouts: {connect_timeout, read_timeout, write_timeout};
@@ -83,11 +95,32 @@ def timeouts: {connect_timeout, read_timeout, write_timeout};
           or .preserve_host == true or .service_url != "http://kinetix-backoffice:8080"
           or (plugin_names | sort) != ["ip-restriction", "rate-limiting"])
       | "backoffice-app-route is not the gated app route of \($backoffice) outside /bff/: \(.)"),
+    ($routes | route("backoffice-tiles-route")
+      | select(.hosts != [$backoffice] or .paths != ["/tiles/"] or .methods != null or .strip_path != false
+          or .preserve_host == true or .service_url != "http://kinetix-backoffice:8080"
+          or (plugin_names | sort) != ["ip-restriction", "rate-limiting"])
+      | "backoffice-tiles-route is not the gated /tiles/ route of \($backoffice) to the app: \(.)"),
+    (($routes | route("backoffice-tiles-route") | gate) as $tiles_gate
+      | ($routes | route("backoffice-app-route") | gate) as $app_gate
+      | if ($app_gate | length) != 1 or $tiles_gate != $app_gate
+          then "backoffice-tiles-route's staff gate is not backoffice-app-route's: \($tiles_gate) != \($app_gate)"
+          else empty end),
+    (($tls + $onions)[] | select((browser_app or onion) and (tiles | not)) | select(limit != per_address_limit)
+      | "\(.name) does not keep the per-address limit of 100 a minute: \(limit)"),
+    (($tls + $onions)[] | select(tiles) | select(limit != map_tile_limit)
+      | "\(.name) does not carry the map-tile limit of 1200 a minute per address: \(limit)"),
+    ([$routes[] | select(limit | any(.[]; .minute == 1200)) | .name] | sort
+      | if . != ["backoffice-tiles-onion-route", "backoffice-tiles-route"]
+          then "the map-tile limit is on \(.), not on the two /tiles/ routes alone"
+          else empty end),
     ($routes | route("seller-unrouted-route")
       | select(.hosts != [$seller] or .paths != ["/"] or (plugin_names | sort) != ["rate-limiting", "request-termination"])
       | "seller-unrouted-route does not close \($seller) outside /bff/: \(.)"),
-    (if ($onions | map(.name) | sort) != ["backoffice-app-onion-route", "edge-backoffice-onion-route"]
-      then "the onion routes are \($onions | map(.name) | sort), not the backoffice's two"
+    (if ($onions | map(.name) | sort) != ["backoffice-app-onion-route", "backoffice-tiles-onion-route", "edge-backoffice-onion-route"]
+      then "the onion routes are \($onions | map(.name) | sort), not the backoffice's three"
+      else empty end),
+    (if ($onions | map(guard) | unique | length) != 1
+      then "the onion routes do not share one guard: \($onions | map({name, guard: guard}))"
       else empty end),
     ($onions[] | select(.protocols != ["http", "https"] or .hosts != [$onion] or plugin_names != ["pre-function", "rate-limiting"])
       | "\(.name) is not the guarded route of the onion host, over http and https, with only its limit: \(.)"),
@@ -120,6 +153,10 @@ def timeouts: {connect_timeout, read_timeout, write_timeout};
     ($routes | route("backoffice-app-onion-route")
       | select(.paths != ["/"] or .methods != null or .strip_path != false or .preserve_host == true
           or .service_url != "http://kinetix-backoffice:8080")
-      | "backoffice-app-onion-route is not the onion's app route outside /bff/: \(.)")
+      | "backoffice-app-onion-route is not the onion's app route outside /bff/: \(.)"),
+    ($routes | route("backoffice-tiles-onion-route")
+      | select(.paths != ["/tiles/"] or .methods != null or .strip_path != false or .preserve_host == true
+          or .service_url != "http://kinetix-backoffice:8080")
+      | "backoffice-tiles-onion-route is not the onion's /tiles/ route to the app: \(.)")
   ]
 | .[]

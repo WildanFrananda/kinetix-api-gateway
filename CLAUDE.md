@@ -192,7 +192,8 @@ session and sends identity's token on) or `cors` (the app and the edge share an 
   session cookie. `backoffice-app-route` (since 2026-10-27, infra `docs/BACKOFFICE.md` BO-D3) takes `/` on the
   backoffice host and sends it to `http://kinetix-backoffice:8080`, the backoffice's static app, behind the staff
   gate and its own per-address limit (Kong keys the counter by route, so assets never spend `/bff/`'s budget);
-  path unchanged, `Host` not kept. `seller-unrouted-route` takes `/` on the seller host and answers
+  path unchanged, `Host` not kept. Its `/tiles/`, the map's archive, has a route of its own (below, "The backoffice's
+  map tiles"). `seller-unrouted-route` takes `/` on the seller host and answers
   `404 {"message":"Not found"}` with `request-termination` until the seller web exists. Until the backoffice
   container runs, the staff network gets Kong's `503` for a name that does not resolve there. Both win because Kong 3.9's priority puts the
   number of matching fields first and then a plain (non-wildcard) host: host + path beats every host-less
@@ -207,7 +208,8 @@ session and sends identity's token on) or `cors` (the app and the edge share an 
 **`rate-limiting` and `cors` are route plugins now, not global.** Kong OSS cannot exclude a route from a
 global plugin (a route's own copy with `enabled = false` is skipped, and the global one runs), and the twins
 must carry no rate limit while `/bff/` must carry no CORS. `onPublicListener` adds both to every TLS route
-(no `cors` on the four browser-app routes, and no second limit where a route has its own, as Midtrans' does).
+(no `cors` on the five browser-app routes, and no second limit where a route has its own, as Midtrans' and the
+backoffice's `/tiles/` do).
 A cost: Kong's limit counter is keyed by the plugin's route, so the per-address budget of 100 a minute is now
 per route, where the global plugin shared one budget across the API. Only `correlation-id` and `prometheus`
 remain global.
@@ -299,13 +301,14 @@ insecure, so it can neither use WebAuthn nor keep the `Secure` session cookie. L
 `.onion`, so the certificate comes from a CA name-constrained to the onion address, whose key stays on the laptop;
 staff browsers import its certificate.
 
-Two routes, both `hosts = [KINETIX_BACKOFFICE_ONION_HOST]`, `protocols = ["http", "https"]`, written by
+Three routes, all `hosts = [KINETIX_BACKOFFICE_ONION_HOST]`, `protocols = ["http", "https"]`, written by
 `onOnionListener`:
 
 | Route | Path | Service |
 | :--- | :--- | :--- |
 | `edge-backoffice-onion-route` | `/bff/` (`strip_path = false`, `preserve_host = true`) | `edge-service`, the same service and 90 s timeouts as the backoffice host's `/bff/` |
 | `backoffice-app-onion-route` | `/` (`strip_path = false`, `Host` not kept) | `backoffice-app` |
+| `backoffice-tiles-onion-route` | `/tiles/` (`strip_path = false`, `Host` not kept), 1200 a minute | `backoffice-app` (below, "The backoffice's map tiles") |
 
 - **The guard.** Each starts with `pre-function` code (`onionListenerOnly`) with three answers. HTTPS that arrived
   on port 8444 is served. Plaintext that arrived on port 8081 gets `308` with `Location: https://<onion
@@ -345,9 +348,10 @@ Two routes, both `hosts = [KINETIX_BACKOFFICE_ONION_HOST]`, `protocols = ["http"
   public on 8443.
 - **No staff gate, and one rate-limit bucket.** Kong's TCP peer on 8081 and 8444 is always the `tor` container, so
   an address gate would see only it. Tor's client authorization is the gate: without the client key a browser
-  cannot even fetch the onion service's descriptor. `perAddressLimit` stays on both routes (Kong keys it by route),
-  but every onion visitor shares tor's address, so it is the face's whole budget of 100 a minute per route, not a
-  per-person one. The edge and identity see tor's address too, so identity's per-address sign-in throttle is one
+  cannot even fetch the onion service's descriptor. `perAddressLimit` stays on the edge's and the app's routes and
+  `mapTileLimit` is on `/tiles/` (Kong keys each by route), but every onion visitor shares tor's address, so each is
+  the face's whole budget for its route (100 a minute, 1200 for the map tiles), not a per-person one. The edge and
+  identity see tor's address too, so identity's per-address sign-in throttle is one
   bucket for the onion face.
 - **The onion address in logs.** Kong's access log carries no host. The address is in the rendered `kong.yml` inside
   the container (the routes' `hosts`, the guard's `Location` and the certificate's `snis`), and Pkl's duplicate-host
@@ -382,11 +386,12 @@ reserved by ICANN for private use (2024), so nobody can register it, and it has 
   sends no address as SNI (RFC 6066 §3), so a certificate entity for one would never be chosen, and Kong refuses one
   at start anyway (`snis` `name: must not be an IP`, measured 2026-11-09): without the Pkl check an address would be
   a gateway that fails at start with Kong's words, not a render that names the reason. The host pattern accepts a
-  `.internal` name (CI renders `backoffice.kinetix.internal` and finds it on both routes and on the one SNI) and
+  `.internal` name (CI renders `backoffice.kinetix.internal` and finds it on its three routes and on the one SNI) and
   still refuses capitals, a scheme, `:443`, and a name used twice.
 - **The routes are unchanged.** `edge-backoffice-route` (`/bff/` to the edge, `Host` kept) and
   `backoffice-app-route` (the rest to the app) keep `hosts = [<the backoffice host without its port>]`, the staff
-  gate and the per-address limit. The gate is unchanged too: it reads the staff peer's tunnel address, which a name
+  gate and the per-address limit; `backoffice-tiles-route` (`/tiles/`, below) has the same host and gate. The gate
+  is unchanged too: it reads the staff peer's tunnel address, which a name
   for the server does not change.
 - **Passkeys.** A passkey belongs to the host it was made on, so one made on the onion never signs in over
   WireGuard and the reverse. Identity holds a relying party per face and picks it from `X-Kinetix-Origin`, which the
@@ -397,6 +402,62 @@ reserved by ICANN for private use (2024), so nobody can register it, and it has 
   hold the certificate, compose passes both variables), as the design's order has it.
 - **Renewal.** Infra re-issues the leaf from the laptop (`bin/kinetix backoffice tls <env>`) and redeploys the
   gateway at its live digest; nothing here changes.
+
+## The backoffice's map tiles: `/tiles/` (2026-11-09)
+
+Infra `docs/BACKOFFICE-F5.md` is the design. The fleet and dispatch screens draw a street map with MapLibre from one
+PMTiles archive that the backoffice serves itself, same origin, from a read-only volume in its nginx: `GET
+/tiles/basemap.pmtiles` by HTTP range requests, with an `ETag` and `Cache-Control: no-cache`, and `GET
+/tiles/basemap.json`, the archive's manifest. Two routes take `/tiles/`, one on each face, to the app's own service
+`backoffice-app` (`strip_path = false`, `Host` not kept, no `methods`, as the app routes):
+
+| Route | Host | Plugins |
+| :--- | :--- | :--- |
+| `backoffice-tiles-route` | the backoffice host without its port, `https` | the staff gate, the same plugin as `backoffice-app-route`'s; `mapTileLimit` |
+| `backoffice-tiles-onion-route` | the onion address, `http` and `https` | the onion routes' guard (served on 8444, `308` from 8081, `421` anywhere else); `mapTileLimit` |
+
+- **Why a route of its own.** Kong keys a limit's counter by its route, so a route of its own is a budget of its own:
+  panning the map never spends the app route's 100 a minute, and the app's pages and assets never spend the map's. On
+  the onion every visitor is tor's one address, so the app route's 100 is the face's whole budget, and one zoom from the
+  whole country to a street needs more than that alone (below).
+- **`/tiles/`, not `/tiles`**, for the reason `/bff/` has its slash: Kong's prefixes are string prefixes. `/tiles`,
+  `/TILES/…` and a `..` that leaves `/tiles/` (Kong matches and forwards the normalised path) are the app route's, at
+  its 100. `/tiles/` beats its face's catch-all `/` by the longer prefix, and host + path beats every host-less API
+  route, so `/tiles/` on the API host is Kong's 404 and on the seller host the seller's 404.
+- **`onOnionListener` keeps a route's own limit**, as `onPublicListener` does: the guard first, then the route's
+  plugins, then `perAddressLimit` only when the route brings no `rate-limiting`. The two older onion routes render
+  exactly as before.
+- **1200 a minute (`mapTileLimit`), and why.** PMTiles over HTTP costs one range request per tile, a leaf directory now
+  and then (the `pmtiles` client keeps a hundred), and when the map opens one 16 KiB read of the header and root
+  directory and one of the metadata. MapLibre draws Protomaps' vector tiles at 512 px and needs, at each zoom, every
+  tile the view overlaps: 9 on average (12 at most) for a 1280×800 map, 15 (20) for a full-HD one, 23 (24) at
+  2560×1440, computed over random positions of the view on the tile grid. A pan by one view's width therefore fetches
+  6 to 19 new tiles, a zoom step a whole new view, and a flight from the whole of Indonesia (z5) to a street (z15)
+  eleven views, about 100 to 250 requests in a second or two. An admin's hard minute on a full-HD map, three such
+  flights, twenty pans and twenty zoom steps, is about 500 + 240 + 300 ≈ 1050 requests. Over Tor a browser goes
+  slower than that: Kong serves 8444 over HTTP/1.1 only (the listener has no `http2` flag: a client offering `h2` gets
+  `http/1.1` by ALPN, on 8444 and on 8443, measured 2026-11-09), a browser opens six connections to a host, and an
+  onion round trip takes about half a second to a second, so one Tor client sends at most about 6 to 12 requests a
+  second, 360 to 720 a minute. 1200 holds one admin's hardest minute on the WireGuard
+  face, where each staff address has its own bucket, and two admins at once on the onion, where they share one, short
+  of both panning without pause. A refused tile is blank until the map asks for it again, and a 429 costs no data. A
+  higher number buys nothing a person does; it only lets a runaway loop pull more of the archive through tor before
+  the minute ends.
+- **Range and conditional requests pass through untouched.** Kong proxies `Range`, `If-Range` and `If-None-Match` as
+  the browser sent them and relays the backoffice's `206`, `304`, `Content-Range`, `ETag` and `Cache-Control` as nginx
+  sent them: nginx's own range and not-modified filters do nothing to a proxied response (no proxy cache,
+  `proxy_force_ranges` off), and Kong turns on no gzip, so the archive's strong `ETag` stays strong. Both matter to
+  PMTiles: its client refuses a whole-file `200` to a range request, and compares each response's `ETag` with the first
+  one's to notice that `basemap fetch` replaced the archive. Measured with the probe against the pinned Kong 3.9: a
+  range comes back `206` with the app's `Content-Range` and exactly its bytes, `If-None-Match` with the archive's `ETag`
+  gets the app's `304`, `If-Range` gets `206` with that `ETag` and the whole archive (`200`, `Accept-Ranges: bytes`)
+  with another, the `ETag` is the one the app sent, and no `Content-Encoding` appears although the request offered
+  gzip, deflate and br.
+- **How the probe stands up the app.** The echo upstream (the same image, Kong) routes `/tiles/` to a static nginx
+  server inside it (`test/edge_probe/tiles.conf`, through `KONG_NGINX_HTTP_INCLUDE`), keeping the `Host` the gateway
+  sent. It serves a 96 KiB archive and a manifest made at test time, answers ranges and conditionals as the backoffice's
+  nginx does, and echoes in `X-Echo-*` response headers the `Host`, `Range`, `If-None-Match` and `If-Range` it received
+  and the `ETag` it sent.
 
 ## `/health` and `/.well-known/security.txt`
 
@@ -430,26 +491,30 @@ sockets carry no `jwt` plugin (matching reads its own `?token=`), so this does n
 ## Gates
 
 - CI `config-valid` (GitHub and GitLab, paired): Pkl renders with and without origins and storage, refuses a
-  contradiction, refuses a render without a staff range or with an everyone range, puts the gate on eleven routes (the ten above and the backoffice app),
+  contradiction, refuses a render without a staff range or with an everyone range, puts the gate on twelve routes (the ten above, the backoffice app and its `/tiles/`),
   `/health` and `security.txt` as above; refuses a render without any of the three browser-app hosts, with `:443`,
   with an onion address that is not one (a scheme, a port, capitals, a v2 length, a DNS name), or with a host
   name used twice (the onion address as the backoffice's TLS host included), or with an address as the backoffice
-  host, and renders `backoffice.kinetix.internal` as the backoffice host on both its routes and its SNI; refuses a
+  host, and renders `backoffice.kinetix.internal` as the backoffice host on its three routes and its SNI; refuses a
   render without the onion's certificate or key, or the backoffice host's, or with each file in the other's place,
   and the refusal never prints the key;
   `test/config_invariants.jq` over a JSON render (only `correlation-id` and `prometheus`
   global; every `jwt` plugin with empty `uri_param_names` and `cookie_names`; every TLS route https-only with
   a rate limit; every twin plaintext-only on the internal host with the guard first and no gate, limit or
   `cors`; the twins exactly the API routes and the merchant socket, each with its original's paths, methods,
-  strip, service and `jwt`; each twin's guard pinning port 8000; the four browser-app routes as above; exactly
-  the two onion routes, `http` and `https` on the onion host with the guard and the limit as their only plugins,
-  the guard serving port 8444 alone and answering plaintext on 8081 with `308` to `https://<onion address>` and no
-  port, `/bff/` to the edge with `Host` kept and `/` to the app, and no other route naming the onion host; exactly
+  strip, service and `jwt`; each twin's guard pinning port 8000; the five browser-app routes as above; exactly
+  the three onion routes, `http` and `https` on the onion host with the guard and the limit as their only plugins,
+  one guard shared by all three, serving port 8444 alone and answering plaintext on 8081 with `308` to
+  `https://<onion address>` and no port, `/bff/` to the edge with `Host` kept and `/` and `/tiles/` to the app, and
+  no other route naming the onion host; the backoffice host's `/tiles/` to the app behind the very staff gate of
+  `backoffice-app-route`; `minute = 1200` (local, per address, fault-tolerant, nothing else) on the two `/tiles/`
+  routes and on no other route, and 100 on every other browser-app and onion route; exactly
   two certificates, each a PEM certificate and private key with its own id, certificate and key, whose `snis` are
   the onion host alone and the backoffice host (no port) alone; `read_timeout` and `write_timeout` 90000 on
   the edge's and the merchant socket's services only, with no `connect_timeout` anywhere); `deck file
   validate`; no upstream outside the network.
-- CI `build-image` (GitHub): the image builds (its build step asserts the same render rules, exactly the onion's
+- CI `build-image` (GitHub): the image builds (its build step asserts the same render rules, the three onion routes
+  and the two `/tiles/` routes with their limit, which the entrypoint asserts again at start, exactly the onion's
   and the backoffice host's certificate entities, each certificate once, with their `snis` (the backoffice host
   rendered from `host:8443`, so the port is seen stripped), a refusal without either pair, and a refusal of an
   address as the backoffice host), then
@@ -476,23 +541,36 @@ sockets carry no `jwt` plugin (matching reads its own `?token=`), so this does n
   paths refuse the address. The backoffice host, with a test CA name-constrained to the probe's backoffice host and a
   leaf it signed (the probe's public certificate no longer names that host, as production's does not): HTTPS on 8443
   and on 8444 with that SNI verifies against that CA and against neither the public certificate nor the onion CA, and
-  the API host still gets the public certificate; the backoffice's routes keep their gate on both listeners. The
-  entrypoint refuses to start without the onion address or with one that is not one, with an address as the
+  the API host still gets the public certificate; the backoffice's routes keep their gate on both listeners. The map
+  tiles on both backoffice faces (the backoffice host from the staff network, the onion on 8444): two ranges come
+  back `206` from the app with its `Content-Range` and bytes, its `ETag` and `Cache-Control` untouched and no
+  `Content-Encoding`, `If-None-Match` gets its `304`, `If-Range` its `206` or the whole archive, the manifest its
+  `200`, all under the limit 1200, and a burst of 150 ranges from one address is all `206` while the app route still
+  answers under its 100; `/tiles`, `/TILES/…` and two `..` spellings are the app route's at 100; from outside the
+  staff range the backoffice host's `/tiles/` gets the 403 (forged headers included), the seller host's the 404, the
+  API host's Kong's 404; plaintext on 8000 and 8081 gets 426 for the browser-app hosts' `/tiles/`, 8081 redirects
+  the onion's, and 8000 and 8443 answer 421 for it. The entrypoint refuses to start without the onion address or
+  with one that is not one, with an address as the
   backoffice host, without the onion's or the backoffice host's certificate or key, with either in the other's place
   or not base64, with a certificate for other hosts (the public one, or the onion's on the backoffice host), with a
   backoffice host its certificate does not name, and with a key that is not the certificate's (Kong's own refusal),
   never printing any of them; once started it has left no temporaries in `/tmp`. Kong's own metrics then show that
-  no twin and no onion route served a request on 8443, that every twin served a plaintext one, and that both onion
-  routes answered 200 (8444) and 308 (8081). Curl refuses to resolve `.onion` names (RFC 7686) even with
+  no twin and no onion route served a request on 8443, that every twin served a plaintext one, that all three onion
+  routes answered 200 (8444) and 308 (8081), and that the onion's `/tiles/` answered 206 and 304. Curl refuses to
+  resolve `.onion` names (RFC 7686) even with
   `--resolve`, so the probe's requests use `--connect-to`, which keeps the URL's host for SNI and `Host`. GitLab's
   image job comes from `kinetix-infrastructure`'s template and does not run the probe.
 - The lab: `test/route_conformance.sh` against the running compose lab; section 5 checks that every admin-only
   route gives the same answer to the calling address and that no public route is gated. Run it from an address in
   the lab's range and from one outside it. Section 6 reads the backoffice host's CA at
   `kinetix-infrastructure/pki/backoffice/ca.crt` (or `BACKOFFICE_CA_FILE`): the backoffice host's certificate verifies
-  against it and not against the gateway CA, and its routes are reached with it. Section 7 also upgrades both sockets
+  against it and not against the gateway CA, and its routes are reached with it; its `/tiles/basemap.pmtiles` answers
+  a range through the `/tiles/` route (limit 1200) with a PMTiles archive's first 16 KiB, `Content-Range` and `ETag`,
+  and `If-None-Match` with `304`, and its `/` keeps the app's 100 (a missing archive, or the app's page in its place
+  while the backoffice has no `/tiles/` yet, is a failure that says which). Section 7 also upgrades both sockets
   in plaintext (the merchant one reaches matching, the courier one gets 426); section 8 checks that a token in the
   query or a cookie is not read; section 9 checks the onion listeners from the lab network (8081 and 8444
   unpublished; 8444's certificate for the onion address verifies against `kinetix-infrastructure/pki/onion/ca.crt`, or
-  `ONION_CA_FILE`; the app and the edge over HTTPS on 8444; 308 from 8081; 421 for that address on 8000 and on 8443),
+  `ONION_CA_FILE`; the app, the edge and the map tiles over HTTPS on 8444, the tiles as on the backoffice host; 308
+  from 8081, `/tiles/` included; 421 for that address on 8000 and on 8443),
   without printing the address.

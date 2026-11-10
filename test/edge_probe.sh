@@ -53,8 +53,13 @@ FROM alpine:3.22.2@sha256:4b7ce07002c69e8f3d704a9c5d6fd3053be500b7f1c69fc0d80990
 RUN apk add --no-cache curl jq openssl
 DOCKERFILE
 
-cp "$HERE/edge_probe/echo.yml" "$HERE/edge_probe/material.sh" "$HERE/edge_probe/checks.sh" "$work/"
-chmod 0644 "$work/echo.yml"
+cp \
+  "$HERE/edge_probe/echo.yml" \
+  "$HERE/edge_probe/tiles.conf" \
+  "$HERE/edge_probe/material.sh" \
+  "$HERE/edge_probe/checks.sh" \
+  "$work/"
+chmod 0644 "$work/echo.yml" "$work/tiles.conf"
 docker run --rm \
   -v "$work:/work" \
   -e API_HOST="$API_HOST" \
@@ -245,8 +250,11 @@ docker run -d --name "$RUN-echo" \
   --ip "$STAFF_PREFIX.30" \
   "${aliases[@]}" \
   -v "$work/echo.yml:/echo.yml:ro" \
+  -v "$work/tiles.conf:/tiles.conf:ro" \
+  -v "$work/app:/srv:ro" \
   -e KONG_DATABASE=off \
   -e KONG_DECLARATIVE_CONFIG=/echo.yml \
+  -e KONG_NGINX_HTTP_INCLUDE=/tiles.conf \
   -e KONG_PROXY_LISTEN="$UPSTREAM_PORTS" \
   -e KONG_ADMIN_LISTEN=off \
   -e KONG_ADMIN_GUI_LISTEN=off \

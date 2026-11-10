@@ -143,8 +143,14 @@ fi
 twins="$(grep -c -- "-internal$" "$CONFIG" || true)"
 onions="$(grep -c -- "-onion-route$" "$CONFIG" || true)"
 guards="$(grep -c "name: pre-function" "$CONFIG" || true)"
-if [ "$twins" -eq 0 ] || [ "$onions" != 2 ] || [ "$((twins + onions))" != "$guards" ]; then
+if [ "$twins" -eq 0 ] || [ "$onions" != 3 ] || [ "$((twins + onions))" != "$guards" ]; then
   echo "the rendered config has $twins internal twins, $onions onion routes and $guards listener guards" >&2
+  exit 1
+fi
+tiles="$(grep -cx -- "    - /tiles/" "$CONFIG" || true)"
+tile_limits="$(grep -cx -- "        minute: 1200" "$CONFIG" || true)"
+if [ "$tiles" != 2 ] || [ "$tile_limits" != 2 ]; then
+  echo "the rendered config has $tiles /tiles/ routes and $tile_limits map-tile limits, not one of each on the backoffice host and on the onion" >&2
   exit 1
 fi
 export KONG_DECLARATIVE_CONFIG="$CONFIG"

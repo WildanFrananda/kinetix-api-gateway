@@ -122,6 +122,12 @@ hidden perAddressLimit: Dynamic = new {
   }
 }
 
+hidden mapTileLimit: Dynamic = (perAddressLimit) {
+  config {
+    minute = 1200
+  }
+}
+
 hidden browserCors: Dynamic = new {
   name = "cors"
   config {
@@ -196,9 +202,10 @@ function browserApp(route: Dynamic): Dynamic = onPublicListener(route, false)
 function onOnionListener(route: Dynamic): Dynamic = (route) {
   hosts { backofficeOnionHost }
   protocols = List("http", "https")
-  plugins {
+  plugins = new Dynamic {
     onionListenerOnly
-    perAddressLimit
+    for (plugin in pluginsOf(route)) { plugin }
+    when (!pluginsOf(route).any((plugin) -> plugin.name == "rate-limiting")) { perAddressLimit }
   }
 }
 
@@ -304,10 +311,28 @@ services {
         plugins { staffGate }
       })
 
+      browserApp(new Dynamic {
+        name = "backoffice-tiles-route"
+        hosts { backofficeHost }
+        paths { "/tiles/" }
+        strip_path = false
+        plugins {
+          staffGate
+          mapTileLimit
+        }
+      })
+
       onOnionListener(new Dynamic {
         name = "backoffice-app-onion-route"
         paths { "/" }
         strip_path = false
+      })
+
+      onOnionListener(new Dynamic {
+        name = "backoffice-tiles-onion-route"
+        paths { "/tiles/" }
+        strip_path = false
+        plugins { mapTileLimit }
       })
     }
   }
