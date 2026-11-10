@@ -93,7 +93,7 @@ The paths only an admin may call are served by dedicated routes that also check 
 | `POST`, `PUT`, `PATCH`, `DELETE` on `/api/v1/categories` and `/api/v1/categories/{id}` (`GET` stays public) | catalog |
 | `/api/v1/warehouse/bins`, `/api/v1/warehouse/stock_receipts`, `/api/v1/warehouse/stock_adjustments` | warehouse |
 | `/api/v1/matching/drivers` and below, `/api/v1/matching/backoffice` and below | matching |
-| `/api/v1/orders/sagas` and below, `GET /api/v1/orders/returns/needs-attention`, `POST /api/v1/orders/returns/{returnNumber}/reject`, `POST /api/v1/orders/{orderNumber}/complete` | order |
+| `GET /api/v1/orders/search` (the admin search over orders), `/api/v1/orders/sagas` and below, `GET /api/v1/orders/returns/needs-attention`, `POST /api/v1/orders/returns/{returnNumber}/reject`, `POST /api/v1/orders/{orderNumber}/complete` | order |
 | `POST /api/v1/seal/predicates`, `DELETE /api/v1/seal/predicates/{id}` (`GET` stays public) | seal |
 | `/bff/` and below on `KINETIX_BACKOFFICE_HOST` (the backoffice's sign-in and every call it makes) | edge |
 | `/tiles/` and below on `KINETIX_BACKOFFICE_HOST` (the street map's archive) | backoffice |

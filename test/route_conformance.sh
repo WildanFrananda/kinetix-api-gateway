@@ -168,6 +168,7 @@ DELETE /api/v1/categories/1
 POST /api/v1/warehouse/bins
 POST /api/v1/warehouse/stock_receipts
 POST /api/v1/warehouse/stock_adjustments
+GET /api/v1/orders/search
 GET /api/v1/orders/sagas/needs-attention
 GET /api/v1/orders/returns/needs-attention
 POST /api/v1/orders/returns/RET-0/reject
@@ -192,6 +193,7 @@ GET /api/v1/products/
 GET /api/v1/warehouse/fulfillment_tasks
 POST /api/v1/orders/checkout
 GET /api/v1/orders/my-orders
+GET /api/v1/orders/0b0e7f6e-1b7a-4c5e-9c1e-1f2a3b4c5d6e
 PUBLIC
 
 header_of() {
