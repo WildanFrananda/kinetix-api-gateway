@@ -453,6 +453,10 @@ PMTiles archive that the backoffice serves itself, same origin, from a read-only
   gets the app's `304`, `If-Range` gets `206` with that `ETag` and the whole archive (`200`, `Accept-Ranges: bytes`)
   with another, the `ETag` is the one the app sent, and no `Content-Encoding` appears although the request offered
   gzip, deflate and br.
+- **The probe's material belongs to the runner.** `material.sh` runs with `--user "$(id -u):$(id -g)"`. It ran as the
+  container's root until 2026-11-10, and on GitHub's Linux runner the `app/tiles/` directory it made was root's, so the
+  probe's own cleanup could not remove the archive (`rm: cannot remove …: Permission denied`) and the job failed after
+  every probe group had passed. Docker Desktop maps ownership to the Mac's user, so it never showed on the laptop.
 - **How the probe stands up the app.** The echo upstream (the same image, Kong) routes `/tiles/` to a static nginx
   server inside it (`test/edge_probe/tiles.conf`, through `KONG_NGINX_HTTP_INCLUDE`), keeping the `Host` the gateway
   sent. It serves a 96 KiB archive and a manifest made at test time, answers ranges and conditionals as the backoffice's

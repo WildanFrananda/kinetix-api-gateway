@@ -61,6 +61,7 @@ cp \
   "$work/"
 chmod 0644 "$work/echo.yml" "$work/tiles.conf"
 docker run --rm \
+  --user "$(id -u):$(id -g)" \
   -v "$work:/work" \
   -e API_HOST="$API_HOST" \
   -e BACKOFFICE_NAME="$BACKOFFICE_NAME" \
