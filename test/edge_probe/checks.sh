@@ -383,6 +383,11 @@ GET /api/v1/matching/drivers/42 token 4000 /api/v1/drivers/42
 GET /api/v1/matching//drivers token 4000 /api/v1/drivers
 GET /api/v1/matching/backoffice/dispatches token 4000 /api/v1/backoffice/dispatches
 POST /api/v1/matching/backoffice/dispatches/9/assign token 4000 /api/v1/backoffice/dispatches/9/assign
+GET /api/v1/orders/search none 8001 /api/v1/orders/search
+GET /api/v1/orders/SEARCH none 8001 /api/v1/orders/SEARCH
+GET /api/v1/orders/search/ none 8001 /api/v1/orders/search/
+GET /api/v1/orders/search?status=PAID,DELIVERED&limit=50 none 8001 /api/v1/orders/search
+GET /api/v1/orders//search none 8001 /api/v1/orders/search
 GET /api/v1/orders/sagas/needs-attention none 8001 /api/v1/orders/sagas/needs-attention
 GET /api/v1/orders/sagas/needs-attention/count none 8001 /api/v1/orders/sagas/needs-attention/count
 GET /api/v1/orders/SAGAS/needs-attention none 8001 /api/v1/orders/SAGAS/needs-attention
@@ -581,6 +586,8 @@ edge_cases() {
 
     refused POST /api/v1/orders/ORD-1/complete none -H "X-Forwarded-For: $STAFF_ADDRESS"
     refused POST /api/v1/orders/ORD-1/complete none -H "X-Real-IP: $STAFF_ADDRESS"
+    refused GET /api/v1/orders/search none -H "X-Forwarded-For: $STAFF_ADDRESS"
+    refused GET /api/v1/orders/search none -H "X-Real-IP: $STAFF_ADDRESS"
 
     call GET /api/v1/orders/returns/needs-attention none
     if [ -n "$(jq -r '.request_id // empty' /tmp/body 2>/dev/null)" ] \

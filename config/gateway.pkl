@@ -615,6 +615,7 @@ services {
       ...api(new Dynamic {
         name = "order-staff-route"
         paths {
+          "~/api/v1/orders/(?i)search"
           "~/api/v1/orders/(?i)sagas"
           "~/api/v1/orders/(?i)returns/needs-attention"
           "~/api/v1/orders/(?i)returns/[^/]+/reject"

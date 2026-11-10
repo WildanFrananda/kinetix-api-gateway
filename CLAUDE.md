@@ -62,7 +62,7 @@ Hardening item 3, option (a), ruled 2026-10-22. Each admin-only path has a dedic
 | `catalog-categories-staff-route` | `/api/v1/categories` for `POST`, `PUT`, `PATCH`, `DELETE` | `catalog-categories` |
 | `warehouse-bins-staff-route`, `-stock-receipts-`, `-stock-adjustments-` | `/api/v1/warehouse/{bins,stock_receipts,stock_adjustments}` | `warehouse-bins`, `warehouse-stock-receipts`, `warehouse-stock-adjustments` |
 | `matching-drivers-staff-route`, `matching-backoffice-staff-route` | `/api/v1/matching/drivers`, `/api/v1/matching/backoffice` | `matching-drivers`, `matching-backoffice` (with `jwt`) |
-| `order-staff-route` | `~/api/v1/orders/(?i)sagas`, `~/api/v1/orders/(?i)returns/needs-attention`, `~/api/v1/orders/(?i)returns/[^/]+/reject`, `~/api/v1/orders/[^/]+/(?i)complete` | `order-service` |
+| `order-staff-route` | `~/api/v1/orders/(?i)search`, `~/api/v1/orders/(?i)sagas`, `~/api/v1/orders/(?i)returns/needs-attention`, `~/api/v1/orders/(?i)returns/[^/]+/reject`, `~/api/v1/orders/[^/]+/(?i)complete` | `order-service` |
 | `seal-predicates-staff-route` | `/api/v1/seal/predicates` for `POST`, `DELETE` | `seal-service` (with `jwt`) |
 
 Each staff route keeps what the route it was split from had: the same upstream host and resulting path, the same
