@@ -1,4 +1,4 @@
-FROM debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8 AS pkl-builder
+FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc AS pkl-builder
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates openssl && rm -rf /var/lib/apt/lists/*
 
 ARG TARGETARCH
@@ -92,7 +92,7 @@ RUN set -eu; \
 # Pin the Kong minor rather than `latest`: the gateway is the platform's only published
 # surface, and `latest` means a rebuild can change what terminates every request without a
 # single line of this repository changing.
-FROM kong:3.9@sha256:aa4a4687b1330e427ad0d3b27a0606b833894297c78abf1a212edc9ba73c8620
+FROM kong:3.9@sha256:c1f5fbb80cd666b4b29b4e97875ecd64d93b01b23fb3083bc3e424b3bad5fdd5
 
 # root only long enough to place pkl, the config source and the entrypoint, and to hand the declarative
 # directory to Kong's user, which writes kong.yml there at start. The previous `USER root` was never
