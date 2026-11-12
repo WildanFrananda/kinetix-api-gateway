@@ -751,6 +751,29 @@ services {
       })
 
       ...api(new Dynamic {
+        name = "seal-report-registry-route"
+        paths { "/api/v1/seal/report-registry" }
+        methods { "GET" }
+        strip_path = false
+      })
+
+      ...api(new Dynamic {
+        name = "seal-reporters-route"
+        paths { "/api/v1/seal/reporters" }
+        methods { "POST"; "OPTIONS" }
+        strip_path = false
+        plugins { jwtPlugin }
+      })
+
+      ...api(new Dynamic {
+        name = "seal-report-rights-route"
+        paths { "/api/v1/seal/report-rights" }
+        methods { "GET"; "OPTIONS" }
+        strip_path = false
+        plugins { jwtPlugin }
+      })
+
+      ...api(new Dynamic {
         name = "seal-predicates-route"
         paths { "/api/v1/seal/predicates" }
         methods { "GET"; "OPTIONS" }
