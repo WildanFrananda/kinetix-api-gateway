@@ -1,16 +1,4 @@
 #!/usr/bin/env bash
-# Evaluates and validates config/envoy.pkl against Envoy schema and invariants.
-#
-# Asserts:
-#   1. Pkl evaluation succeeds and renders a complete Envoy v3 bootstrap YAML.
-#   2. All 16 clusters and 4 listeners exist in the generated YAML.
-#   3. RBAC, JWT authn, rate limits, and WebSocket upgrade configurations exist.
-#   4. Direct responses for /health and /.well-known/security.txt are present.
-#   5. The generated envoy.yaml passes formal Envoy v3 validation (via envoy or docker).
-#   6. Negative cases (missing staffRanges, duplicate hosts, invalid onion) are rejected.
-#
-# Usage: test/validate_envoy.sh
-
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -84,7 +72,6 @@ ok "Pkl evaluation succeeded (rendered $(wc -l < "$TMP_DIR/envoy-full.yaml") lin
 
 echo "==> Verifying structural invariants..."
 
-# Invariant 1: 16 Clusters
 expected_clusters=(
   "edge_service"
   "backoffice_app"
@@ -112,7 +99,6 @@ for cluster in "${expected_clusters[@]}"; do
   fi
 done
 
-# Invariant 2: 4 Listeners
 expected_listeners=(
   "public_tls"
   "internal_http"
@@ -128,7 +114,6 @@ for listener in "${expected_listeners[@]}"; do
   fi
 done
 
-# Invariant 3: HTTP Filters
 if grep -q "envoy.filters.http.jwt_authn" "$TMP_DIR/envoy-full.yaml"; then
   ok "JWT authn filter is present"
 else
@@ -147,7 +132,6 @@ else
   bad "Local rate limiting filter is missing"
 fi
 
-# Invariant 4: Direct responses
 if grep -q "status: 200" "$TMP_DIR/envoy-full.yaml" && grep -q '{"status":"ok"}' "$TMP_DIR/envoy-full.yaml"; then
   ok "Health direct response is present"
 else
@@ -160,7 +144,6 @@ else
   bad "security.txt direct response is missing"
 fi
 
-# Invariant 5: WebSocket Upgrades
 if grep -q "upgrade_type: websocket" "$TMP_DIR/envoy-full.yaml"; then
   ok "WebSocket upgrade configs are present"
 else

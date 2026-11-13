@@ -353,3 +353,6 @@ jobs:
 
       - name: Validate Envoy configuration
         run: bash test/validate_envoy.sh
+
+      - name: Envoy edge conformance probe
+        run: bash test/conformance_envoy.sh
