@@ -1,0 +1,102 @@
+module kinetix.gateway.envoy.Params
+
+import "Jwks.pkl"
+
+local ipv4Octet: String = #"(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])"#
+local ipv4Range: String = #"\#(ipv4Octet)(\.\#(ipv4Octet)){3}(/(3[0-2]|[12][0-9]|[1-9]))?"#
+local ipv6Range: String = #"[0-9a-f:]*:[0-9a-f:.]*(/(12[0-8]|1[01][0-9]|[1-9][0-9]|[1-9]))?"#
+local hostPattern: String = #"[a-z0-9.-]+(:[0-9]+)?"#
+
+local identityJwtPublicKey: String = read("prop:identityJwtPublicKey")
+
+identityJwksJson: String = Jwks.fromRsaPem(identityJwtPublicKey)
+jwtIssuer: String(!isEmpty) = read("prop:jwtIssuer")
+
+local corsOriginsProp: String = read("prop:corsOrigins")
+storageHost: String = read?("prop:storageHost") ?? ""
+corsOrigins: List<String(this == "*" || matches(Regex(#"https?://[a-z0-9.-]+(:[0-9]+)?"#)))>(!contains("*") || length == 1) =
+  corsOriginsProp.split(",").map((origin) -> origin.trim()).filter((origin) -> !origin.isEmpty)
+
+local staffRangesProp: String = read("prop:staffRanges")
+staffRanges: List<String(matches(Regex("\(ipv4Range)|\(ipv6Range)")))>(!isEmpty) =
+  staffRangesProp.split(",").map((range) -> range.trim()).filter((range) -> !range.isEmpty)
+
+publicApiHost: String(matches(Regex(hostPattern))) = read("prop:publicApiHost")
+
+local backofficeHostProp: String(
+  matches(Regex(hostPattern)),
+  !endsWith(":443"),
+  !matches(Regex(#"[0-9.]+(:[0-9]+)?"#))
+) = read("prop:backofficeHost")
+
+local sellerHostProp: String(matches(Regex(hostPattern)), !endsWith(":443")) = read("prop:sellerHost")
+local backofficeOnionHostProp: String(matches(Regex(#"[a-z2-7]{56}\.onion"#))) = read("prop:backofficeOnionHost")
+
+local function pemFile(path: String, marker: String, what: String): String =
+  let (text = read("file:\(path)").text)
+    if (text.contains(marker)) text
+    else throw("the file given as \(what) does not hold one")
+
+backofficeOnionTlsCert: String = pemFile(
+  read("prop:backofficeOnionTlsCertFile"),
+  "-----BEGIN CERTIFICATE-----",
+  "the onion's TLS certificate"
+)
+
+backofficeOnionTlsKey: String = pemFile(
+  read("prop:backofficeOnionTlsKeyFile"),
+  "PRIVATE KEY-----",
+  "the onion's TLS private key"
+)
+
+backofficeTlsCert: String = pemFile(
+  read("prop:backofficeTlsCertFile"),
+  "-----BEGIN CERTIFICATE-----",
+  "the backoffice host's TLS certificate"
+)
+
+backofficeTlsKey: String = pemFile(
+  read("prop:backofficeTlsKeyFile"),
+  "PRIVATE KEY-----",
+  "the backoffice host's TLS private key"
+)
+
+gatewayTlsCertFile: String = read?("prop:gatewayTlsCertFile") ?? "/etc/kinetix/tls/tls.crt"
+gatewayTlsKeyFile: String = read?("prop:gatewayTlsKeyFile") ?? "/etc/kinetix/tls/tls.key"
+
+internalHost: String = "kinetix-api-gateway"
+internalPort: Int = 8000
+onionPort: Int = 8081
+onionTlsPort: Int = 8444
+publicTlsPort: Int = 8443
+idleSocketTimeout: Int = 90
+
+local hostNames: List<String> = List(
+  publicApiHost,
+  storageHost,
+  backofficeHostProp,
+  backofficeOnionHostProp,
+  sellerHostProp,
+  internalHost
+)
+  .filter((host) -> !host.isEmpty)
+  .map((host) -> host.split(":").first)
+
+function distinctHost(host: String): String =
+  if (hostNames.isDistinct) host
+  else throw("the public API, storage, backoffice, onion, seller and internal hosts must all differ: \(hostNames
+    .map((name) -> if (name.endsWith(".onion")) "<the onion address>" else name)
+    .join(", "))")
+
+backofficeHost: String = distinctHost(backofficeHostProp).split(":").first
+sellerHost: String = distinctHost(sellerHostProp).split(":").first
+backofficeOnionHost: String = distinctHost(backofficeOnionHostProp)
+
+securityTxt: String = List(
+  "Contact: https://github.com/WildanFrananda/kinetix-docs/security/advisories/new",
+  "Expires: 2027-10-21T00:00:00.000Z",
+  "Preferred-Languages: en, id",
+  "Canonical: https://\(publicApiHost)/.well-known/security.txt",
+  "Policy: https://docs.wildanfrananda.my.id/reference/report-a-vulnerability/",
+  ""
+).join("\n")

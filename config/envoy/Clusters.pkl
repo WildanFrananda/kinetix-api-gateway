@@ -1,0 +1,71 @@
+module kinetix.gateway.envoy.Clusters
+
+import "Params.pkl"
+
+function cluster(name: String, host: String, port: Int): Dynamic =
+  let (clusterName = name)
+    new Dynamic {
+      ["name"] = clusterName
+      connect_timeout {
+        seconds = 5
+      }
+      type = "STRICT_DNS"
+      dns_lookup_family = "V4_ONLY"
+      lb_policy = "ROUND_ROBIN"
+      load_assignment {
+        cluster_name = clusterName
+        endpoints {
+          new Dynamic {
+            lb_endpoints {
+              new Dynamic {
+                endpoint {
+                  address {
+                    socket_address {
+                      address = host
+                      port_value = port
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+function clusterWithTimeout(name: String, host: String, port: Int, idleTimeoutSec: Int): Dynamic = (cluster(name, host, port)) {
+  typed_extension_protocol_options {
+    ["envoy.extensions.upstreams.http.v3.HttpProtocolOptions"] {
+      ["@type"] = "type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions"
+      common_http_protocol_options {
+        idle_timeout {
+          seconds = idleTimeoutSec
+        }
+      }
+      explicit_http_config {
+        http_protocol_options {}
+      }
+    }
+  }
+}
+
+all: Dynamic = new Dynamic {
+  clusterWithTimeout("edge_service", "kinetix-edge-service", 8080, Params.idleSocketTimeout)
+  cluster("backoffice_app", "kinetix-backoffice", 8080)
+  cluster("identity_service", "kinetix-identity-service", 5000)
+  cluster("catalog_service", "kinetix-catalog-service", 8000)
+  cluster("search_service", "kinetix-search-service", 8088)
+  cluster("warehouse_service", "kinetix-warehouse-service", 3000)
+  cluster("matching_service", "kinetix-matching-service", 4000)
+  clusterWithTimeout("matching_merchant_socket", "kinetix-matching-service", 4000, Params.idleSocketTimeout)
+  cluster("pricing_service", "kinetix-pricing-service", 6000)
+  cluster("order_service", "kinetix-order-service", 8001)
+  cluster("review_service", "kinetix-review-service", 8002)
+  cluster("payment_service", "kinetix-payment-service", 8003)
+  cluster("notary_service", "kinetix-notary-service", 8010)
+  cluster("seal_service", "kinetix-seal-service", 8012)
+  cluster("notification_service", "kinetix-notification-service", 8004)
+  when (!Params.storageHost.isEmpty) {
+    cluster("storage_service", "kinetix-object-store", 9000)
+  }
+}

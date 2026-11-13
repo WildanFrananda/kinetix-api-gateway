@@ -1,0 +1,371 @@
+module kinetix.gateway.envoy.Listeners
+
+import "Params.pkl"
+import "Filters.pkl"
+import "Routes.pkl"
+
+local websocketUpgradeConfig: Dynamic = new Dynamic {
+  upgrade_type = "websocket"
+}
+
+function inlineTlsTransportSocket(cert: String, key: String): Dynamic = new Dynamic {
+  name = "envoy.transport_sockets.tls"
+  typed_config {
+    ["@type"] = "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext"
+    common_tls_context {
+      tls_certificates {
+        new Dynamic {
+          certificate_chain { inline_string = cert }
+          private_key { inline_string = key }
+        }
+      }
+    }
+  }
+}
+
+function fileTlsTransportSocket(certFile: String, keyFile: String): Dynamic = new Dynamic {
+  name = "envoy.transport_sockets.tls"
+  typed_config {
+    ["@type"] = "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext"
+    common_tls_context {
+      tls_certificates {
+        new Dynamic {
+          certificate_chain { filename = certFile }
+          private_key { filename = keyFile }
+        }
+      }
+    }
+  }
+}
+
+backofficeFilterChain: Dynamic = new Dynamic {
+  filter_chain_match {
+    server_names = List(Params.backofficeHost)
+  }
+  transport_socket = inlineTlsTransportSocket(Params.backofficeTlsCert, Params.backofficeTlsKey)
+  filters {
+    new Dynamic {
+      name = "envoy.filters.network.http_connection_manager"
+      typed_config {
+        ["@type"] = "type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager"
+        stat_prefix = "backoffice_https"
+        use_remote_address = true
+        internal_address_config = Filters.internalAddressConfig
+        preserve_external_request_id = true
+        always_set_request_id_in_response = true
+        local_reply_config = Filters.localReplyConfig
+        upgrade_configs { websocketUpgradeConfig }
+        route_config {
+          name = "backoffice_routes"
+          virtual_hosts {
+            Routes.backofficeVhost
+            new Dynamic {
+              name = "backoffice_misdirected_vhost"
+              domains = List(Params.internalHost, "\(Params.internalHost):*", Params.backofficeOnionHost, "\(Params.backofficeOnionHost):*")
+              routes { Routes.misdirectedRoute }
+            }
+            new Dynamic {
+              name = "backoffice_unmatched_vhost"
+              domains = List("*")
+              routes { Routes.unmatchedRoute }
+            }
+          }
+        }
+        http_filters {
+          Filters.luaNormalizeAndRateLimitFilter
+          Filters.rbacFilter
+          Filters.localRateLimitFilter
+          Filters.routerFilter
+        }
+      }
+    }
+  }
+}
+
+defaultPublicFilterChain: Dynamic = new Dynamic {
+  transport_socket = fileTlsTransportSocket(Params.gatewayTlsCertFile, Params.gatewayTlsKeyFile)
+  filters {
+    new Dynamic {
+      name = "envoy.filters.network.http_connection_manager"
+      typed_config {
+        ["@type"] = "type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager"
+        stat_prefix = "public_https"
+        use_remote_address = true
+        internal_address_config = Filters.internalAddressConfig
+        preserve_external_request_id = true
+        always_set_request_id_in_response = true
+        local_reply_config = Filters.localReplyConfig
+        upgrade_configs { websocketUpgradeConfig }
+        route_config {
+          name = "public_routes"
+          virtual_hosts {
+            new Dynamic {
+              name = "public_misdirected_vhost"
+              domains = List(Params.internalHost, "\(Params.internalHost):*", Params.backofficeOnionHost, "\(Params.backofficeOnionHost):*")
+              routes { Routes.misdirectedRoute }
+            }
+            Routes.backofficeVhost
+            Routes.sellerVhost
+            when (!Params.storageHost.isEmpty) {
+              Routes.storageVhost
+            }
+            new Dynamic {
+              name = "public_api_vhost"
+              domains = List("*")
+              when (!Params.corsOrigins.isEmpty) {
+                typed_per_filter_config {
+                  ["envoy.filters.http.cors"] = Filters.corsPolicy
+                }
+              }
+              routes = Routes.sharedApiRoutes(true)
+            }
+          }
+        }
+        http_filters {
+          Filters.luaNormalizeAndRateLimitFilter
+          when (!Params.corsOrigins.isEmpty) {
+            Filters.corsFilter
+          }
+          Filters.jwtAuthnFilter
+          Filters.rbacFilter
+          Filters.localRateLimitFilter
+          Filters.routerFilter
+        }
+      }
+    }
+  }
+}
+
+publicTlsListener: Dynamic = new Dynamic {
+  name = "public_tls"
+  address {
+    socket_address {
+      address = "0.0.0.0"
+      port_value = Params.publicTlsPort
+    }
+  }
+  listener_filters { Filters.tlsInspectorFilter }
+  filter_chains {
+    backofficeFilterChain
+    new Dynamic {
+      filter_chain_match {
+        server_names = List(Params.backofficeOnionHost)
+      }
+      transport_socket = inlineTlsTransportSocket(Params.backofficeOnionTlsCert, Params.backofficeOnionTlsKey)
+      filters {
+        new Dynamic {
+          name = "envoy.filters.network.http_connection_manager"
+          typed_config {
+            ["@type"] = "type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager"
+            stat_prefix = "public_onion_misdirected"
+            internal_address_config = Filters.internalAddressConfig
+            upgrade_configs { websocketUpgradeConfig }
+            route_config {
+              name = "public_onion_misdirected_routes"
+              virtual_hosts {
+                new Dynamic {
+                  name = "public_onion_misdirected_vhost"
+                  domains = List("*")
+                  routes { Routes.misdirectedRoute }
+                }
+              }
+            }
+            http_filters {
+              Filters.routerFilter
+            }
+          }
+        }
+      }
+    }
+    defaultPublicFilterChain
+  }
+}
+
+internalHttpListener: Dynamic = new Dynamic {
+  name = "internal_http"
+  address {
+    socket_address {
+      address = "0.0.0.0"
+      port_value = Params.internalPort
+    }
+  }
+  filter_chains {
+    new Dynamic {
+      filters {
+        new Dynamic {
+          name = "envoy.filters.network.http_connection_manager"
+          typed_config {
+            ["@type"] = "type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager"
+            stat_prefix = "internal_http"
+            use_remote_address = true
+            internal_address_config = Filters.internalAddressConfig
+            preserve_external_request_id = true
+            always_set_request_id_in_response = true
+            local_reply_config = Filters.localReplyConfig
+            upgrade_configs { websocketUpgradeConfig }
+            route_config {
+              name = "internal_routes"
+              virtual_hosts {
+                new Dynamic {
+                  name = "internal_vhost"
+                  domains = List(Params.internalHost, "\(Params.internalHost):\(Params.internalPort)")
+                  request_headers_to_add {
+                    new Dynamic {
+                      header { key = "x-forwarded-proto"; value = "https" }
+                      append_action = "OVERWRITE_IF_EXISTS_OR_ADD"
+                    }
+                    new Dynamic {
+                      header { key = "x-real-ip"; value = "%DOWNSTREAM_REMOTE_ADDRESS_WITHOUT_PORT%" }
+                      append_action = "OVERWRITE_IF_EXISTS_OR_ADD"
+                    }
+                  }
+                  routes = Routes.sharedApiRoutes(false)
+                }
+                new Dynamic {
+                  name = "internal_onion_misdirected_vhost"
+                  domains = List(Params.backofficeOnionHost, "\(Params.backofficeOnionHost):*")
+                  routes { Routes.misdirectedRoute }
+                }
+                new Dynamic {
+                  name = "internal_needs_tls_vhost"
+                  domains = List("*")
+                  routes {
+                    Routes.needsTlsRoute(new Dynamic { prefix = "/" })
+                  }
+                }
+              }
+            }
+            http_filters {
+              Filters.luaNormalizeAndRateLimitFilter
+              Filters.jwtAuthnFilter
+              Filters.routerFilter
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+onionRedirectListener: Dynamic = new Dynamic {
+  name = "onion_redirect"
+  address {
+    socket_address {
+      address = "0.0.0.0"
+      port_value = Params.onionPort
+    }
+  }
+  filter_chains {
+    new Dynamic {
+      filters {
+        new Dynamic {
+          name = "envoy.filters.network.http_connection_manager"
+          typed_config {
+            ["@type"] = "type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager"
+            stat_prefix = "onion_redirect"
+            internal_address_config = Filters.internalAddressConfig
+            normalize_path = false
+            merge_slashes = false
+            route_config {
+              name = "onion_redirect_routes"
+              virtual_hosts {
+                new Dynamic {
+                  name = "onion_redirect_vhost"
+                  domains = List(Params.backofficeOnionHost, "\(Params.backofficeOnionHost):*")
+                  routes {
+                    new Dynamic {
+                      match {
+                        prefix = "/"
+                        headers { Routes.onionAuthorityHeader }
+                      }
+                      redirect {
+                        scheme_redirect = "https"
+                        host_redirect = Params.backofficeOnionHost
+                        response_code = "PERMANENT_REDIRECT"
+                        strip_query = false
+                      }
+                    }
+                    Routes.unmatchedRoute
+                  }
+                }
+                new Dynamic {
+                  name = "onion_redirect_misdirected_vhost"
+                  domains = List(Params.internalHost, "\(Params.internalHost):*")
+                  routes { Routes.misdirectedRoute }
+                }
+                new Dynamic {
+                  name = "onion_redirect_needs_tls_vhost"
+                  domains = List("*")
+                  routes {
+                    Routes.needsTlsRoute(new Dynamic { prefix = "/" })
+                  }
+                }
+              }
+            }
+            http_filters {
+              Filters.routerFilter
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+onionTlsListener: Dynamic = new Dynamic {
+  name = "onion_tls"
+  address {
+    socket_address {
+      address = "0.0.0.0"
+      port_value = Params.onionTlsPort
+    }
+  }
+  listener_filters { Filters.tlsInspectorFilter }
+  filter_chains {
+    new Dynamic {
+      filter_chain_match {
+        server_names = List(Params.backofficeOnionHost)
+      }
+      transport_socket = inlineTlsTransportSocket(Params.backofficeOnionTlsCert, Params.backofficeOnionTlsKey)
+      filters {
+        new Dynamic {
+          name = "envoy.filters.network.http_connection_manager"
+          typed_config {
+            ["@type"] = "type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager"
+            stat_prefix = "onion_https"
+            use_remote_address = true
+            internal_address_config = Filters.internalAddressConfig
+            preserve_external_request_id = true
+            always_set_request_id_in_response = true
+            upgrade_configs { websocketUpgradeConfig }
+            route_config {
+              name = "onion_routes"
+              virtual_hosts {
+                Routes.onionVhost
+                new Dynamic {
+                  name = "onion_misdirected_vhost"
+                  domains = List(Params.internalHost, "\(Params.internalHost):*")
+                  routes { Routes.misdirectedRoute }
+                }
+              }
+            }
+            http_filters {
+              Filters.luaNormalizeAndRateLimitFilter
+              Filters.localRateLimitFilter
+              Filters.routerFilter
+            }
+          }
+        }
+      }
+    }
+    backofficeFilterChain
+    defaultPublicFilterChain
+  }
+}
+
+all: Dynamic = new Dynamic {
+  publicTlsListener
+  internalHttpListener
+  onionRedirectListener
+  onionTlsListener
+}

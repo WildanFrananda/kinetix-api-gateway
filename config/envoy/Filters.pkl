@@ -1,0 +1,283 @@
+module kinetix.gateway.envoy.Filters
+
+import "Params.pkl"
+
+function parseCidr(range: String): Dynamic =
+  let (parts = range.split("/"))
+    new Dynamic {
+      address_prefix = parts.first
+      prefix_len = if (parts.length > 1) parts[1].toInt() else (if (parts.first.contains(":")) 128 else 32)
+    }
+
+internalAddressConfig: Dynamic = new Dynamic {
+  unix_sockets = false
+  cidr_ranges = List(
+    parseCidr("10.0.0.0/8"),
+    parseCidr("172.16.0.0/12"),
+    parseCidr("192.168.0.0/16"),
+    parseCidr("127.0.0.1/32")
+  )
+}
+
+local staffPrincipals: List<Dynamic> =
+  Params.staffRanges.map((range) -> new Dynamic {
+    direct_remote_ip = parseCidr(range)
+  })
+
+staffGatePerRoute: Dynamic = new Dynamic {
+  ["@type"] = "type.googleapis.com/envoy.extensions.filters.http.rbac.v3.RBACPerRoute"
+  rbac {
+    rules {
+      action = "ALLOW"
+      policies {
+        ["staff_ranges"] {
+          permissions {
+            new Dynamic { any = true }
+          }
+          principals {
+            new Dynamic {
+              or_ids {
+                ids = staffPrincipals
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+jwtPerRoute: Dynamic = new Dynamic {
+  ["@type"] = "type.googleapis.com/envoy.extensions.filters.http.jwt_authn.v3.PerRouteConfig"
+  requirement_name = "identity_provider"
+}
+
+function rateLimitPerRoute(minuteRate: Int): Dynamic = new Dynamic {
+  ["@type"] = "type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit"
+  stat_prefix = "http_local_rate_limiter"
+  enable_x_ratelimit_headers = "DRAFT_VERSION_03"
+  token_bucket {
+    max_tokens = minuteRate
+    tokens_per_fill = minuteRate
+    fill_interval {
+      seconds = 60
+    }
+  }
+  filter_enabled {
+    runtime_key = "local_rate_limit_enabled"
+    default_value {
+      numerator = 100
+      denominator = "HUNDRED"
+    }
+  }
+  filter_enforced {
+    runtime_key = "local_rate_limit_enforced"
+    default_value {
+      numerator = 100
+      denominator = "HUNDRED"
+    }
+  }
+}
+
+defaultRateLimitPerRoute: Dynamic = rateLimitPerRoute(100)
+midtransRateLimitPerRoute: Dynamic = rateLimitPerRoute(600)
+mapTileRateLimitPerRoute: Dynamic = rateLimitPerRoute(1200)
+sealPresentationRateLimitPerRoute: Dynamic = rateLimitPerRoute(20)
+
+corsPolicy: Dynamic = new Dynamic {
+  ["@type"] = "type.googleapis.com/envoy.extensions.filters.http.cors.v3.CorsPolicy"
+  allow_origin_string_match = Params.corsOrigins.map((origin) ->
+    if (origin == "*") new Dynamic { safe_regex { regex = ".*" } }
+    else new Dynamic { exact = origin }
+  )
+  allow_methods = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+  allow_headers = "Accept, Authorization, Content-Type, Idempotency-Key, X-Request-Id, X-Requested-With, X-Kinetix-Client, X-Firebase-AppCheck"
+  expose_headers = "X-Request-Id, Allow, Idempotent-Replayed, Location, Retry-After"
+  max_age = "3600"
+  allow_credentials = false
+}
+
+corsFilter: Dynamic = new Dynamic {
+  name = "envoy.filters.http.cors"
+  typed_config {
+    ["@type"] = "type.googleapis.com/envoy.extensions.filters.http.cors.v3.Cors"
+  }
+}
+
+localReplyConfig: Dynamic = new Dynamic {
+  mappers {
+    new Dynamic {
+      filter {
+        status_code_filter {
+          comparison {
+            op = "EQ"
+            value {
+              default_value = 401
+              runtime_key = "local_reply_401"
+            }
+          }
+        }
+      }
+      body_format_override {
+        content_type = "application/json"
+        text_format_source {
+          inline_string = "{\"message\":\"Unauthorized\"}"
+        }
+      }
+      headers_to_add {
+        new Dynamic {
+          header {
+            key = "www-authenticate"
+            value = "Bearer"
+          }
+          append_action = "OVERWRITE_IF_EXISTS_OR_ADD"
+        }
+      }
+    }
+    new Dynamic {
+      filter {
+        status_code_filter {
+          comparison {
+            op = "EQ"
+            value {
+              default_value = 403
+              runtime_key = "local_reply_403"
+            }
+          }
+        }
+      }
+      body_format_override {
+        content_type = "application/json"
+        json_format {
+          message = "This route is not available from your network"
+          request_id = "%REQ(X-REQUEST-ID)%"
+        }
+      }
+    }
+  }
+}
+
+luaNormalizeAndRateLimitFilter: Dynamic = new Dynamic {
+  name = "envoy.filters.http.lua"
+  typed_config {
+    ["@type"] = "type.googleapis.com/envoy.extensions.filters.http.lua.v3.Lua"
+    default_source_code {
+      inline_string = """
+function envoy_on_request(request_handle)
+  local xff = request_handle:headers():get("x-forwarded-for")
+  if xff ~= nil then
+    local spaced = xff:gsub(",%s*", ", ")
+    if spaced ~= xff then
+      request_handle:headers():replace("x-forwarded-for", spaced)
+    end
+  end
+  local raw = request_handle:headers():get(":path")
+  if raw == nil then return end
+  local path, query = raw:match("^([^?]*)(.*)$")
+  local decoded = path:gsub("%%([0-9a-fA-F][0-9a-fA-F])", function(hex)
+    local b = tonumber(hex, 16)
+    if (b >= 0x41 and b <= 0x5A) or (b >= 0x61 and b <= 0x7A) or (b >= 0x30 and b <= 0x39) or b == 0x2D or b == 0x2E or b == 0x5F or b == 0x7E then
+      return string.char(b)
+    end
+    return "%" .. hex
+  end)
+  decoded = decoded:gsub("//+", "/")
+  local trailing = decoded:len() > 1 and decoded:sub(-1) == "/"
+  local parts = {}
+  for seg in decoded:gmatch("[^/]+") do
+    if seg == ".." then
+      if #parts > 0 then table.remove(parts) end
+    elseif seg ~= "." then
+      table.insert(parts, seg)
+    end
+  end
+  local norm = "/" .. table.concat(parts, "/")
+  if trailing and norm ~= "/" then norm = norm .. "/" end
+  if norm .. query ~= raw then
+    request_handle:headers():replace(":path", norm .. query)
+  end
+end
+
+function envoy_on_response(response_handle)
+  local limit = response_handle:headers():get("x-ratelimit-limit")
+  local remaining = response_handle:headers():get("x-ratelimit-remaining")
+  if limit ~= nil then
+    local num = limit:match("^(%d+)")
+    if num ~= nil then
+      response_handle:headers():replace("x-ratelimit-limit-minute", num)
+    end
+  end
+  if remaining ~= nil then
+    response_handle:headers():replace("x-ratelimit-remaining-minute", remaining)
+  end
+end
+"""
+    }
+  }
+}
+
+jwtAuthnFilter: Dynamic = new Dynamic {
+  name = "envoy.filters.http.jwt_authn"
+  typed_config {
+    ["@type"] = "type.googleapis.com/envoy.extensions.filters.http.jwt_authn.v3.JwtAuthentication"
+    bypass_cors_preflight = true
+    providers {
+      ["identity_provider"] {
+        issuer = Params.jwtIssuer
+        local_jwks {
+          inline_string = Params.identityJwksJson
+        }
+        forward = true
+        from_headers {
+          new Dynamic {
+            name = "Authorization"
+            value_prefix = "Bearer "
+          }
+        }
+      }
+    }
+    requirement_map {
+      ["identity_provider"] {
+        provider_name = "identity_provider"
+      }
+    }
+  }
+}
+
+rbacFilter: Dynamic = new Dynamic {
+  name = "envoy.filters.http.rbac"
+  typed_config {
+    ["@type"] = "type.googleapis.com/envoy.extensions.filters.http.rbac.v3.RBAC"
+    rules {
+      action = "ALLOW"
+      policies {
+        ["allow_all"] {
+          permissions { new Dynamic { any = true } }
+          principals { new Dynamic { any = true } }
+        }
+      }
+    }
+  }
+}
+
+localRateLimitFilter: Dynamic = new Dynamic {
+  name = "envoy.filters.http.local_ratelimit"
+  typed_config {
+    ["@type"] = "type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit"
+    stat_prefix = "http_local_rate_limiter"
+  }
+}
+
+routerFilter: Dynamic = new Dynamic {
+  name = "envoy.filters.http.router"
+  typed_config {
+    ["@type"] = "type.googleapis.com/envoy.extensions.filters.http.router.v3.Router"
+  }
+}
+
+tlsInspectorFilter: Dynamic = new Dynamic {
+  name = "envoy.filters.listener.tls_inspector"
+  typed_config {
+    ["@type"] = "type.googleapis.com/envoy.extensions.filters.listener.tls_inspector.v3.TlsInspector"
+  }
+}

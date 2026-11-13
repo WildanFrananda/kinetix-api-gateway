@@ -1,0 +1,381 @@
+module kinetix.gateway.envoy.Routes
+
+import "Params.pkl"
+import "Filters.pkl"
+
+function methodHeader(method: String): Dynamic = new Dynamic {
+  name = ":method"
+  string_match {
+    exact = method
+  }
+}
+
+function prefixMatch(pathPrefix: String): Dynamic = new Dynamic {
+  prefix = pathPrefix
+}
+
+function prefixMethodMatch(pathPrefix: String, method: String): Dynamic = new Dynamic {
+  prefix = pathPrefix
+  headers { methodHeader(method) }
+}
+
+function pathMethodMatch(exactPath: String, method: String): Dynamic = new Dynamic {
+  path = exactPath
+  headers { methodHeader(method) }
+}
+
+function regexMatch(pattern: String): Dynamic = new Dynamic {
+  safe_regex { regex = pattern }
+}
+
+function toCluster(clusterName: String): Dynamic = new Dynamic {
+  cluster = clusterName
+}
+
+function toClusterRewrite(clusterName: String, rewrite: String): Dynamic = new Dynamic {
+  cluster = clusterName
+  prefix_rewrite = rewrite
+}
+
+function toClusterWebsocket(clusterName: String, rewrite: String): Dynamic = new Dynamic {
+  cluster = clusterName
+  prefix_rewrite = rewrite
+  upgrade_configs {
+    new Dynamic { upgrade_type = "websocket" }
+  }
+}
+
+function toClusterWebsocketTimeout(clusterName: String, rewrite: String, timeoutSec: Int): Dynamic = new Dynamic {
+  cluster = clusterName
+  prefix_rewrite = rewrite
+  upgrade_configs {
+    new Dynamic { upgrade_type = "websocket" }
+  }
+  timeout { seconds = timeoutSec }
+}
+
+onionAuthorityHeader: Dynamic = new Dynamic {
+  name = ":authority"
+  string_match {
+    safe_regex {
+      regex = "^\(Params.backofficeOnionHost)(:[0-9]+)?$"
+    }
+  }
+}
+
+misdirectedRoute: Dynamic = new Dynamic {
+  match { prefix = "/" }
+  direct_response {
+    status = 421
+    body { inline_string = "{\"message\":\"Misdirected Request\"}" }
+  }
+  response_headers_to_add {
+    new Dynamic {
+      header { key = "content-type"; value = "application/json" }
+    }
+  }
+}
+
+function needsTlsRoute(matchBlock: Dynamic): Dynamic = new Dynamic {
+  match = matchBlock
+  direct_response {
+    status = 426
+    body { inline_string = "{\"message\":\"Please use HTTPS protocol\"}" }
+  }
+  response_headers_to_add {
+    new Dynamic {
+      header { key = "content-type"; value = "application/json" }
+    }
+  }
+}
+
+unmatchedRoute: Dynamic = new Dynamic {
+  match { prefix = "/" }
+  direct_response {
+    status = 404
+    body { inline_string = "{\"message\":\"no Route matched with those values\"}" }
+  }
+  response_headers_to_add {
+    new Dynamic {
+      header { key = "content-type"; value = "application/json" }
+    }
+  }
+}
+
+sellerUnroutedRoute: Dynamic = new Dynamic {
+  match { prefix = "/" }
+  direct_response {
+    status = 404
+    body { inline_string = "{\"message\":\"Not found\"}" }
+  }
+  response_headers_to_add {
+    new Dynamic {
+      header { key = "content-type"; value = "application/json" }
+    }
+  }
+}
+
+function apiFilterConfig(isPublic: Boolean, withJwt: Boolean, withStaff: Boolean, rateLimit: Dynamic): Dynamic =
+  new Dynamic {
+    when (withJwt) {
+      ["envoy.filters.http.jwt_authn"] = Filters.jwtPerRoute
+    }
+    when (isPublic && withStaff) {
+      ["envoy.filters.http.rbac"] = Filters.staffGatePerRoute
+    }
+    when (isPublic) {
+      ["envoy.filters.http.local_ratelimit"] = rateLimit
+    }
+  }
+
+function apiRoute(
+  isPublic: Boolean,
+  matchBlock: Dynamic,
+  routeBlock: Dynamic,
+  withJwt: Boolean,
+  withStaff: Boolean,
+  rateLimit: Dynamic
+): Dynamic = new Dynamic {
+  match = matchBlock
+  route = routeBlock
+  when (isPublic || withJwt) {
+    typed_per_filter_config = apiFilterConfig(isPublic, withJwt, withStaff, rateLimit)
+  }
+}
+
+function publicRoute(isPublic: Boolean, matchBlock: Dynamic, routeBlock: Dynamic): Dynamic =
+  apiRoute(isPublic, matchBlock, routeBlock, false, false, Filters.defaultRateLimitPerRoute)
+
+function jwtRoute(isPublic: Boolean, matchBlock: Dynamic, routeBlock: Dynamic): Dynamic =
+  apiRoute(isPublic, matchBlock, routeBlock, true, false, Filters.defaultRateLimitPerRoute)
+
+function staffRoute(isPublic: Boolean, matchBlock: Dynamic, routeBlock: Dynamic): Dynamic =
+  apiRoute(isPublic, matchBlock, routeBlock, false, true, Filters.defaultRateLimitPerRoute)
+
+function staffJwtRoute(isPublic: Boolean, matchBlock: Dynamic, routeBlock: Dynamic): Dynamic =
+  apiRoute(isPublic, matchBlock, routeBlock, true, true, Filters.defaultRateLimitPerRoute)
+
+function sharedApiRoutes(isPublic: Boolean): Dynamic = new Dynamic {
+  when (isPublic) {
+    new Dynamic {
+      match { path = "/health" }
+      direct_response {
+        status = 200
+        body { inline_string = "{\"status\":\"ok\"}" }
+      }
+      response_headers_to_add {
+        new Dynamic {
+          header { key = "content-type"; value = "application/json" }
+        }
+      }
+    }
+  }
+  when (!isPublic) {
+    needsTlsRoute(new Dynamic { path = "/health" })
+  }
+  when (isPublic) {
+    new Dynamic {
+      match { path = "/.well-known/security.txt" }
+      direct_response {
+        status = 200
+        body { inline_string = Params.securityTxt }
+      }
+      response_headers_to_add {
+        new Dynamic {
+          header { key = "content-type"; value = "text/plain; charset=utf-8" }
+        }
+      }
+    }
+  }
+  when (!isPublic) {
+    needsTlsRoute(new Dynamic { path = "/.well-known/security.txt" })
+  }
+
+  staffJwtRoute(isPublic, prefixMatch("/api/v1/sellers/applications"), toCluster("identity_service"))
+  staffJwtRoute(isPublic, prefixMatch("/api/v1/couriers/applications"), toCluster("identity_service"))
+  staffJwtRoute(isPublic, regexMatch("^/api/v1/sellers/[^/]+/(verify|reject)$"), toCluster("identity_service"))
+  staffJwtRoute(isPublic, regexMatch("^/api/v1/couriers/[^/]+/(approve|reject)$"), toCluster("identity_service"))
+  publicRoute(isPublic, prefixMatch("/api/v1/auth/login"), toCluster("identity_service"))
+  publicRoute(isPublic, prefixMatch("/api/v1/auth/register"), toCluster("identity_service"))
+  publicRoute(isPublic, prefixMatch("/api/v1/auth/refresh"), toCluster("identity_service"))
+  publicRoute(isPublic, prefixMatch("/api/v1/auth/2fa/verify"), toCluster("identity_service"))
+  publicRoute(isPublic, prefixMatch("/api/v1/couriers/register"), toCluster("identity_service"))
+  publicRoute(isPublic, prefixMatch("/.well-known/jwks.json"), toCluster("identity_service"))
+  jwtRoute(isPublic, prefixMatch("/api/v1/auth"), toCluster("identity_service"))
+  jwtRoute(isPublic, prefixMatch("/api/v1/users"), toCluster("identity_service"))
+  jwtRoute(isPublic, prefixMatch("/api/v1/sellers"), toCluster("identity_service"))
+  jwtRoute(isPublic, prefixMatch("/api/v1/couriers"), toCluster("identity_service"))
+
+  publicRoute(isPublic, prefixMatch("/api/v1/products/search"), toCluster("search_service"))
+  publicRoute(isPublic, prefixMatch("/api/v1/products/suggest"), toCluster("search_service"))
+  publicRoute(isPublic, prefixMatch("/api/v1/products"), toClusterRewrite("catalog_service", "/api/products"))
+  staffRoute(isPublic, prefixMethodMatch("/api/v1/categories", "POST"), toClusterRewrite("catalog_service", "/api/categories"))
+  staffRoute(isPublic, prefixMethodMatch("/api/v1/categories", "PUT"), toClusterRewrite("catalog_service", "/api/categories"))
+  staffRoute(isPublic, prefixMethodMatch("/api/v1/categories", "PATCH"), toClusterRewrite("catalog_service", "/api/categories"))
+  staffRoute(isPublic, prefixMethodMatch("/api/v1/categories", "DELETE"), toClusterRewrite("catalog_service", "/api/categories"))
+  publicRoute(isPublic, prefixMatch("/api/v1/categories"), toClusterRewrite("catalog_service", "/api/categories"))
+
+  staffRoute(isPublic, prefixMatch("/api/v1/warehouse/bins"), toClusterRewrite("warehouse_service", "/api/v1/bins"))
+  staffRoute(isPublic, prefixMatch("/api/v1/warehouse/stock_receipts"), toClusterRewrite("warehouse_service", "/api/v1/stock_receipts"))
+  staffRoute(isPublic, prefixMatch("/api/v1/warehouse/stock_adjustments"), toClusterRewrite("warehouse_service", "/api/v1/stock_adjustments"))
+  publicRoute(isPublic, prefixMatch("/api/v1/warehouse"), toClusterRewrite("warehouse_service", "/api/v1"))
+
+  when (isPublic) {
+    publicRoute(true, prefixMatch("/ws/v1/matching/driver/websocket"), toClusterWebsocket("matching_service", "/driver/websocket"))
+    publicRoute(true, prefixMatch("/ws/v1/matching/driver"), toClusterWebsocket("matching_service", "/driver/websocket"))
+  }
+  when (!isPublic) {
+    needsTlsRoute(prefixMatch("/ws/v1/matching/driver"))
+  }
+  publicRoute(isPublic, prefixMatch("/ws/v1/matching/merchant/websocket"), toClusterWebsocketTimeout("matching_merchant_socket", "/merchant/websocket", Params.idleSocketTimeout))
+  publicRoute(isPublic, prefixMatch("/ws/v1/matching/merchant"), toClusterWebsocketTimeout("matching_merchant_socket", "/merchant/websocket", Params.idleSocketTimeout))
+  staffJwtRoute(isPublic, prefixMatch("/api/v1/matching/drivers"), toClusterRewrite("matching_service", "/api/v1/drivers"))
+  staffJwtRoute(isPublic, prefixMatch("/api/v1/matching/backoffice"), toClusterRewrite("matching_service", "/api/v1/backoffice"))
+  jwtRoute(isPublic, prefixMatch("/api/v1/matching"), toClusterRewrite("matching_service", "/api/v1"))
+
+  publicRoute(isPublic, prefixMatch("/api/v1/pricing"), toClusterRewrite("pricing_service", "/api/v1"))
+
+  staffRoute(isPublic, regexMatch("^/api/v1/orders/(?i)search.*$"), toCluster("order_service"))
+  staffRoute(isPublic, regexMatch("^/api/v1/orders/(?i)sagas.*$"), toCluster("order_service"))
+  staffRoute(isPublic, regexMatch("^/api/v1/orders/(?i)returns/needs-attention.*$"), toCluster("order_service"))
+  staffRoute(isPublic, regexMatch("^/api/v1/orders/(?i)returns/[^/]+/reject.*$"), toCluster("order_service"))
+  staffRoute(isPublic, regexMatch("^/api/v1/orders/[^/]+/(?i)complete.*$"), toCluster("order_service"))
+  publicRoute(isPublic, prefixMatch("/api/v1/cart"), toCluster("order_service"))
+  publicRoute(isPublic, prefixMatch("/api/v1/orders"), toCluster("order_service"))
+
+  publicRoute(isPublic, prefixMatch("/api/v1/reviews"), toCluster("review_service"))
+
+  apiRoute(isPublic, pathMethodMatch("/api/v1/payment/gateway/midtrans/notifications", "POST"), toCluster("payment_service"), false, false, Filters.midtransRateLimitPerRoute)
+  jwtRoute(isPublic, prefixMatch("/api/v1/payment"), toCluster("payment_service"))
+
+  jwtRoute(isPublic, prefixMethodMatch("/api/v1/proofs/registrations", "GET"), toCluster("notary_service"))
+  jwtRoute(isPublic, prefixMethodMatch("/api/v1/proofs/registrations", "POST"), toCluster("notary_service"))
+  jwtRoute(isPublic, prefixMethodMatch("/api/v1/proofs", "GET"), toCluster("notary_service"))
+
+  jwtRoute(isPublic, prefixMatch("/api/v1/seal/courier-credentials"), toCluster("seal_service"))
+  publicRoute(isPublic, prefixMatch("/api/v1/seal/holder"), toCluster("seal_service"))
+  apiRoute(isPublic, prefixMethodMatch("/api/v1/seal/presentations", "POST"), toCluster("seal_service"), false, false, Filters.sealPresentationRateLimitPerRoute)
+  publicRoute(isPublic, prefixMatch("/api/v1/seal/presentations"), toCluster("seal_service"))
+  publicRoute(isPublic, prefixMatch("/api/v1/seal/verify"), toCluster("seal_service"))
+  publicRoute(isPublic, prefixMatch("/api/v1/seal/registry"), toCluster("seal_service"))
+  publicRoute(isPublic, prefixMatch("/api/v1/seal/report-registry"), toCluster("seal_service"))
+  jwtRoute(isPublic, prefixMatch("/api/v1/seal/reporters"), toCluster("seal_service"))
+  jwtRoute(isPublic, prefixMatch("/api/v1/seal/report-rights"), toCluster("seal_service"))
+  staffJwtRoute(isPublic, prefixMethodMatch("/api/v1/seal/predicates", "POST"), toCluster("seal_service"))
+  staffJwtRoute(isPublic, prefixMethodMatch("/api/v1/seal/predicates", "DELETE"), toCluster("seal_service"))
+  publicRoute(isPublic, prefixMatch("/api/v1/seal/predicates"), toCluster("seal_service"))
+
+  jwtRoute(isPublic, prefixMatch("/api/v1/notifications/devices"), toCluster("notification_service"))
+
+  unmatchedRoute
+}
+
+backofficeVhost: Dynamic = new Dynamic {
+  name = "backoffice_vhost"
+  domains = List(Params.backofficeHost, "\(Params.backofficeHost):*")
+  routes {
+    new Dynamic {
+      match { prefix = "/bff/" }
+      route {
+        cluster = "edge_service"
+        timeout { seconds = Params.idleSocketTimeout }
+      }
+      typed_per_filter_config {
+        ["envoy.filters.http.rbac"] = Filters.staffGatePerRoute
+        ["envoy.filters.http.local_ratelimit"] = Filters.defaultRateLimitPerRoute
+      }
+    }
+    new Dynamic {
+      match { prefix = "/tiles/" }
+      route {
+        cluster = "backoffice_app"
+        host_rewrite_literal = "kinetix-backoffice:8080"
+      }
+      typed_per_filter_config {
+        ["envoy.filters.http.rbac"] = Filters.staffGatePerRoute
+        ["envoy.filters.http.local_ratelimit"] = Filters.mapTileRateLimitPerRoute
+      }
+    }
+    new Dynamic {
+      match { prefix = "/" }
+      route {
+        cluster = "backoffice_app"
+        host_rewrite_literal = "kinetix-backoffice:8080"
+      }
+      typed_per_filter_config {
+        ["envoy.filters.http.rbac"] = Filters.staffGatePerRoute
+        ["envoy.filters.http.local_ratelimit"] = Filters.defaultRateLimitPerRoute
+      }
+    }
+  }
+}
+
+sellerVhost: Dynamic = new Dynamic {
+  name = "seller_vhost"
+  domains = List(Params.sellerHost, "\(Params.sellerHost):*")
+  routes {
+    new Dynamic {
+      match { prefix = "/bff/" }
+      route {
+        cluster = "edge_service"
+        timeout { seconds = Params.idleSocketTimeout }
+      }
+      typed_per_filter_config { ["envoy.filters.http.local_ratelimit"] = Filters.defaultRateLimitPerRoute }
+    }
+    sellerUnroutedRoute
+  }
+}
+
+storageVhost: Dynamic = new Dynamic {
+  name = "storage_vhost"
+  domains = List(Params.distinctHost(Params.storageHost), "\(Params.distinctHost(Params.storageHost)):*")
+  routes {
+    new Dynamic {
+      match { prefix = "/" }
+      route { cluster = "storage_service" }
+      per_request_buffer_limit_bytes = 16777216
+      typed_per_filter_config { ["envoy.filters.http.local_ratelimit"] = Filters.defaultRateLimitPerRoute }
+    }
+  }
+}
+
+onionVhost: Dynamic = new Dynamic {
+  name = "onion_vhost"
+  domains = List(Params.backofficeOnionHost, "\(Params.backofficeOnionHost):*")
+  routes {
+    new Dynamic {
+      match {
+        prefix = "/bff/"
+        headers { onionAuthorityHeader }
+      }
+      route {
+        cluster = "edge_service"
+        timeout { seconds = Params.idleSocketTimeout }
+      }
+      typed_per_filter_config { ["envoy.filters.http.local_ratelimit"] = Filters.defaultRateLimitPerRoute }
+    }
+    new Dynamic {
+      match {
+        prefix = "/tiles/"
+        headers { onionAuthorityHeader }
+      }
+      route {
+        cluster = "backoffice_app"
+        host_rewrite_literal = "kinetix-backoffice:8080"
+      }
+      typed_per_filter_config { ["envoy.filters.http.local_ratelimit"] = Filters.mapTileRateLimitPerRoute }
+    }
+    new Dynamic {
+      match {
+        prefix = "/"
+        headers { onionAuthorityHeader }
+      }
+      route {
+        cluster = "backoffice_app"
+        host_rewrite_literal = "kinetix-backoffice:8080"
+      }
+      typed_per_filter_config { ["envoy.filters.http.local_ratelimit"] = Filters.defaultRateLimitPerRoute }
+    }
+    unmatchedRoute
+  }
+}
