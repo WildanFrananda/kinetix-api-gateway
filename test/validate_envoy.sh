@@ -168,21 +168,24 @@ else
 fi
 
 echo "==> Validating configuration with Envoy v1.31..."
+chmod -R a+rX "$TMP_DIR"
 if command -v envoy >/dev/null 2>&1; then
-  if envoy --mode validate -c "$TMP_DIR/envoy-full.yaml" >/dev/null 2>&1; then
+  if envoy_out=$(envoy --mode validate -c "$TMP_DIR/envoy-full.yaml" 2>&1); then
     ok "Envoy binary validated envoy.yaml successfully"
   else
-    bad "Envoy binary validation failed"
+    bad "Envoy binary validation failed: $envoy_out"
   fi
 elif command -v docker >/dev/null 2>&1; then
-  if docker run --rm \
+  if docker_out=$(docker run --rm \
+    -u 0:0 \
     -v "$TMP_DIR/envoy-full.yaml:/etc/envoy/envoy.yaml:ro" \
     -v "$TMP_DIR/gateway-tls.crt:/etc/kinetix/tls/tls.crt:ro" \
     -v "$TMP_DIR/gateway-tls.key:/etc/kinetix/tls/tls.key:ro" \
-    envoyproxy/envoy:v1.31-latest envoy --mode validate -c /etc/envoy/envoy.yaml >/dev/null 2>&1; then
+    envoyproxy/envoy:v1.31-latest envoy --mode validate -c /etc/envoy/envoy.yaml 2>&1); then
     ok "Envoy v1.31 container validated envoy.yaml successfully"
   else
-    bad "Envoy container validation failed"
+    bad "Envoy container validation failed:"
+    printf '%s\n' "$docker_out" >&2
   fi
 else
   echo "Warning: neither envoy nor docker found; skipping formal validation" >&2
