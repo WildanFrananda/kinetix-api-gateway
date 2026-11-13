@@ -87,7 +87,20 @@ RUN set -eu; \
     refuses $backoffice_tls -p staffRanges=192.0.2.0/24 -p backofficeHost="$backoffice" -p sellerHost=seller.build.invalid -p backofficeOnionHost="$onion"; \
     refuses $onion_tls -p staffRanges=192.0.2.0/24 -p backofficeHost="$backoffice" -p sellerHost=seller.build.invalid -p backofficeOnionHost="$onion"; \
     refuses $tls -p staffRanges=192.0.2.0/24 -p backofficeHost=192.0.2.1 -p sellerHost=seller.build.invalid -p backofficeOnionHost="$onion"; \
-    rm -f /tmp/throwaway.pem /tmp/throwaway-public.pem /tmp/onion.pem /tmp/onion.key /tmp/backoffice.pem /tmp/backoffice.key /tmp/kong.yml /tmp/kong-without.yml
+    pkl eval -p identityJwtPublicKey="$(cat /tmp/throwaway-public.pem)" \
+             -p jwtIssuer=https://identity.build.invalid \
+             -p corsOrigins= \
+             -p staffRanges=192.0.2.0/24 \
+             -p publicApiHost=api.build.invalid \
+             -p backofficeHost="$backoffice" \
+             -p sellerHost=seller.build.invalid \
+             -p backofficeOnionHost="$onion" \
+             $tls \
+             -f yaml envoy.pkl -o /tmp/envoy.yaml; \
+    if ! grep -q "identity_provider" /tmp/envoy.yaml; then \
+      echo "the rendered envoy config carries no verification key"; exit 1; \
+    fi; \
+    rm -f /tmp/throwaway.pem /tmp/throwaway-public.pem /tmp/onion.pem /tmp/onion.key /tmp/backoffice.pem /tmp/backoffice.key /tmp/kong.yml /tmp/kong-without.yml /tmp/envoy.yaml
 
 # Pin the Kong minor rather than `latest`: the gateway is the platform's only published
 # surface, and `latest` means a rebuild can change what terminates every request without a
