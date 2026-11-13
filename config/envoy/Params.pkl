@@ -66,6 +66,7 @@ gatewayTlsKeyFile: String = read?("prop:gatewayTlsKeyFile") ?? "/etc/kinetix/tls
 
 internalHost: String = "kinetix-api-gateway"
 internalPort: Int = 8000
+statusPort: Int = 8100
 onionPort: Int = 8081
 onionTlsPort: Int = 8444
 publicTlsPort: Int = 8443

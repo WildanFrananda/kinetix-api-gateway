@@ -303,7 +303,7 @@ jobs:
 
   build-image:
     runs-on: ubuntu-latest
-    needs: config-valid
+    needs: [config-valid, envoy-valid]
     steps:
       - uses: actions/checkout@v7
 

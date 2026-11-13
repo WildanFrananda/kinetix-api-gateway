@@ -33,6 +33,11 @@ function cluster(name: String, host: String, port: Int): Dynamic =
       }
     }
 
+function staticCluster(name: String, host: String, port: Int): Dynamic = (cluster(name, host, port)) {
+  type = "STATIC"
+  dns_lookup_family = null
+}
+
 function clusterWithTimeout(name: String, host: String, port: Int, idleTimeoutSec: Int): Dynamic = (cluster(name, host, port)) {
   typed_extension_protocol_options {
     ["envoy.extensions.upstreams.http.v3.HttpProtocolOptions"] {
@@ -50,6 +55,7 @@ function clusterWithTimeout(name: String, host: String, port: Int, idleTimeoutSe
 }
 
 all: Dynamic = new Dynamic {
+  staticCluster("envoy_admin", "127.0.0.1", 9901)
   clusterWithTimeout("edge_service", "kinetix-edge-service", 8080, Params.idleSocketTimeout)
   cluster("backoffice_app", "kinetix-backoffice", 8080)
   cluster("identity_service", "kinetix-identity-service", 5000)

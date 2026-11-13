@@ -1006,48 +1006,100 @@ onion_face() {
   refused GET /tiles/basemap.pmtiles none -H "Range: bytes=0-16383"
 }
 
+envoy_metric_value() {
+  local metric="$1"
+  local prefix="$2"
+  local extra="${3:-}"
+  if [ -n "$extra" ]; then
+    awk -v m="$metric" -v p="$prefix" -v e="$extra" \
+      '$0 ~ "^" m "\\{" && index($0, "envoy_http_conn_manager_prefix=\"" p "\"") && index($0, e) { sum += $NF } END { printf "%d\n", sum + 0 }' /tmp/envoy-metrics
+  else
+    awk -v m="$metric" -v p="$prefix" \
+      '$0 ~ "^" m "\\{" && index($0, "envoy_http_conn_manager_prefix=\"" p "\"") { sum += $NF } END { printf "%d\n", sum + 0 }' /tmp/envoy-metrics
+  fi
+}
+
 metrics_after() {
-  curl -sS --max-time 10 "http://$GATEWAY_ADDRESS:8100/metrics" | grep '^kong_http_requests_total{' > /tmp/metrics
-  twins_served="$(grep 'route="[^"]*-internal"' /tmp/metrics | grep -v 'code="421"' | wc -l | tr -d ' ')"
-  twins_refused="$(grep 'route="[^"]*-internal"' /tmp/metrics | grep -c 'code="421"')"
-  public_served="$(grep -v 'route="[^"]*-internal"' /tmp/metrics | grep -c 'code="200"')"
-  onion_served="$(grep 'route="[^"]*-onion-route"' /tmp/metrics | grep -v 'code="421"' | wc -l | tr -d ' ')"
-  onion_refused="$(grep 'route="[^"]*-onion-route"' /tmp/metrics | grep -c 'code="421"')"
+  curl -sS --max-time 10 "http://$GATEWAY_ADDRESS:8100/metrics" > /tmp/raw-metrics
+  if grep -q '^kong_http_requests_total{' /tmp/raw-metrics; then
+    grep '^kong_http_requests_total{' /tmp/raw-metrics > /tmp/metrics
+    twins_served="$(grep 'route="[^"]*-internal"' /tmp/metrics | grep -v 'code="421"' | wc -l | tr -d ' ')"
+    twins_refused="$(grep 'route="[^"]*-internal"' /tmp/metrics | grep -c 'code="421"')"
+    public_served="$(grep -v 'route="[^"]*-internal"' /tmp/metrics | grep -c 'code="200"')"
+    onion_served="$(grep 'route="[^"]*-onion-route"' /tmp/metrics | grep -v 'code="421"' | wc -l | tr -d ' ')"
+    onion_refused="$(grep 'route="[^"]*-onion-route"' /tmp/metrics | grep -c 'code="421"')"
+    case "$1" in
+      tls)
+        if [ "$twins_served" = 0 ] && [ "$twins_refused" -gt 0 ] && [ "$public_served" -gt 0 ]; then
+          ok "after every TLS group: $public_served TLS route series served, no twin served anything, $twins_refused twin series only refused 421"
+        else
+          bad "after the TLS groups the twins served $twins_served series: $(grep 'route="[^"]*-internal"' /tmp/metrics | grep -v 'code="421"' | head -n 3)"
+        fi
+        if [ "$onion_served" = 0 ] && [ "$onion_refused" -gt 0 ]; then
+          ok "after every TLS group: no onion route served anything, $onion_refused onion series only refused 421"
+        else
+          bad "after the TLS groups the onion routes served $onion_served series: $(grep 'route="[^"]*-onion-route"' /tmp/metrics | grep -v 'code="421"' | head -n 3)"
+        fi ;;
+      plaintext)
+        served="$(grep 'route="[^"]*-internal"' /tmp/metrics | grep 'code="200"' | sed 's/.*route="\([^"]*\)".*/\1/' | sort -u | wc -l | tr -d ' ')"
+        if [ "$EXPECTED_TWINS" -gt 0 ] && [ "$served" = "$EXPECTED_TWINS" ]; then
+          ok "every one of the $EXPECTED_TWINS twins served the plaintext listener"
+        else
+          bad "$served of $EXPECTED_TWINS twins served a plaintext request"
+        fi
+        for code in 200 308; do
+          onions="$(grep 'route="[^"]*-onion-route"' /tmp/metrics | grep "code=\"$code\"" | sed 's/.*route="\([^"]*\)".*/\1/' | sort -u | tr '\n' ' ')"
+          if [ "$onions" = "backoffice-app-onion-route backoffice-tiles-onion-route edge-backoffice-onion-route " ]; then
+            ok "all three onion routes answered $code (200 served on 8444, 308 redirected on 8081)"
+          else
+            bad "the onion routes that answered $code: '$onions'"
+          fi
+        done
+
+        for code in 206 304; do
+          if grep 'route="backoffice-tiles-onion-route"' /tmp/metrics | grep -q "code=\"$code\""; then
+            ok "the onion's /tiles/ route answered $code on 8444"
+          else
+            bad "the onion's /tiles/ route never answered $code"
+          fi
+        done ;;
+    esac
+    return 0
+  fi
+
+  grep '^envoy_http_downstream_rq' /tmp/raw-metrics > /tmp/envoy-metrics
+  public_total="$(envoy_metric_value envoy_http_downstream_rq_completed public_https)"
+  backoffice_total="$(envoy_metric_value envoy_http_downstream_rq_completed backoffice_https)"
+  internal_total="$(envoy_metric_value envoy_http_downstream_rq_completed internal_http)"
+  onion_https_total="$(envoy_metric_value envoy_http_downstream_rq_completed onion_https)"
+  onion_redirect_total="$(envoy_metric_value envoy_http_downstream_rq_completed onion_redirect)"
   case "$1" in
     tls)
-      if [ "$twins_served" = 0 ] && [ "$twins_refused" -gt 0 ] && [ "$public_served" -gt 0 ]; then
-        ok "after every TLS group: $public_served TLS route series served, no twin served anything, $twins_refused twin series only refused 421"
+      if [ "$public_total" -gt 0 ] && [ "$backoffice_total" -gt 0 ] && [ "$internal_total" = 0 ]; then
+        ok "after every TLS group: public_https ($public_total) and backoffice_https ($backoffice_total) served, internal_http served 0"
       else
-        bad "after the TLS groups the twins served $twins_served series: $(grep 'route="[^"]*-internal"' /tmp/metrics | grep -v 'code="421"' | head -n 3)"
+        bad "after TLS groups: public_https=$public_total backoffice_https=$backoffice_total internal_http=$internal_total"
       fi
-      if [ "$onion_served" = 0 ] && [ "$onion_refused" -gt 0 ]; then
-        ok "after every TLS group: no onion route served anything, $onion_refused onion series only refused 421"
+      if [ "$onion_https_total" = 0 ] && [ "$onion_redirect_total" = 0 ]; then
+        ok "after every TLS group: onion_https and onion_redirect served 0"
       else
-        bad "after the TLS groups the onion routes served $onion_served series: $(grep 'route="[^"]*-onion-route"' /tmp/metrics | grep -v 'code="421"' | head -n 3)"
+        bad "after TLS groups: onion_https=$onion_https_total onion_redirect=$onion_redirect_total"
       fi ;;
     plaintext)
-      served="$(grep 'route="[^"]*-internal"' /tmp/metrics | grep 'code="200"' | sed 's/.*route="\([^"]*\)".*/\1/' | sort -u | wc -l | tr -d ' ')"
-      if [ "$EXPECTED_TWINS" -gt 0 ] && [ "$served" = "$EXPECTED_TWINS" ]; then
-        ok "every one of the $EXPECTED_TWINS twins served the plaintext listener"
+      internal_2xx="$(envoy_metric_value envoy_http_downstream_rq_xx internal_http 'envoy_response_code_class="2"')"
+      onion_2xx="$(envoy_metric_value envoy_http_downstream_rq_xx onion_https 'envoy_response_code_class="2"')"
+      onion_3xx="$(envoy_metric_value envoy_http_downstream_rq_xx onion_https 'envoy_response_code_class="3"')"
+      redirect_3xx="$(envoy_metric_value envoy_http_downstream_rq_xx onion_redirect 'envoy_response_code_class="3"')"
+      if [ "$internal_2xx" -gt 0 ]; then
+        ok "internal_http served $internal_2xx 2xx responses on the plaintext listener"
       else
-        bad "$served of $EXPECTED_TWINS twins served a plaintext request"
+        bad "internal_http served 0 2xx responses"
       fi
-      for code in 200 308; do
-        onions="$(grep 'route="[^"]*-onion-route"' /tmp/metrics | grep "code=\"$code\"" | sed 's/.*route="\([^"]*\)".*/\1/' | sort -u | tr '\n' ' ')"
-        if [ "$onions" = "backoffice-app-onion-route backoffice-tiles-onion-route edge-backoffice-onion-route " ]; then
-          ok "all three onion routes answered $code (200 served on 8444, 308 redirected on 8081)"
-        else
-          bad "the onion routes that answered $code: '$onions'"
-        fi
-      done
-
-      for code in 206 304; do
-        if grep 'route="backoffice-tiles-onion-route"' /tmp/metrics | grep -q "code=\"$code\""; then
-          ok "the onion's /tiles/ route answered $code on 8444"
-        else
-          bad "the onion's /tiles/ route never answered $code"
-        fi
-      done ;;
+      if [ "$onion_2xx" -gt 0 ] && [ "$onion_3xx" -gt 0 ] && [ "$redirect_3xx" -gt 0 ]; then
+        ok "onion listeners served $onion_2xx 2xx and $onion_3xx 3xx on 8444, plus $redirect_3xx 3xx redirects on 8081"
+      else
+        bad "onion metrics incomplete: onion_2xx=$onion_2xx onion_3xx=$onion_3xx redirect_3xx=$redirect_3xx"
+      fi ;;
   esac
 }
 

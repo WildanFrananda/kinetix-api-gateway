@@ -2,6 +2,7 @@
 set -euo pipefail
 
 IMAGE="${1:?usage: test/edge_probe.sh <gateway image>}"
+KONG_ECHO_IMAGE="${KONG_ECHO_IMAGE:-kong:3.9@sha256:aa4a4687b1330e427ad0d3b27a0606b833894297c78abf1a212edc9ba73c8620}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUN="kxprobe-$$"
 STAFF_PREFIX="${EDGE_PROBE_STAFF_PREFIX:-10.231.10}"
@@ -104,7 +105,7 @@ refuses_to_start() {
     -e KINETIX_BACKOFFICE_TLS_CERT_B64="$backoffice_cert" \
     -e KINETIX_BACKOFFICE_TLS_KEY_B64="$backoffice_key" \
     "$@" \
-    "$IMAGE" kong config parse /usr/local/kong/declarative/kong.yml 2>&1)"; then
+    "$IMAGE" envoy --mode validate -c /var/lib/envoy/envoy.yaml 2>&1)"; then
     echo "  FAIL  the gateway started $label"
     failures=$((failures + 1))
   elif printf '%s' "$output" | grep -qF -e "$onion_key_line" -e "$onion_cert_line"; then
@@ -252,6 +253,7 @@ docker run -d --name "$RUN-echo" \
   "${aliases[@]}" \
   -v "$work/echo.yml:/echo.yml:ro" \
   -v "$work/tiles.conf:/tiles.conf:ro" \
+  -v "$HERE/../config/access_log.conf:/usr/local/kong/kinetix/access_log.conf:ro" \
   -v "$work/app:/srv:ro" \
   -e KONG_DATABASE=off \
   -e KONG_DECLARATIVE_CONFIG=/echo.yml \
@@ -260,7 +262,7 @@ docker run -d --name "$RUN-echo" \
   -e KONG_ADMIN_LISTEN=off \
   -e KONG_ADMIN_GUI_LISTEN=off \
   --entrypoint /docker-entrypoint.sh \
-  "$IMAGE" kong docker-start >/dev/null
+  "$KONG_ECHO_IMAGE" kong docker-start >/dev/null
 
 docker run -d --name "$RUN-gateway" \
   --network "$RUN-staff" \
@@ -280,8 +282,6 @@ docker run -d --name "$RUN-gateway" \
   -e KINETIX_BACKOFFICE_ONION_TLS_KEY_B64="$onion_key" \
   -e KINETIX_BACKOFFICE_TLS_CERT_B64="$backoffice_cert" \
   -e KINETIX_BACKOFFICE_TLS_KEY_B64="$backoffice_key" \
-  -e KONG_STATUS_LISTEN=0.0.0.0:8100 \
-  -e KONG_DNS_VALID_TTL=5 \
   "$IMAGE" >/dev/null
 docker network connect --ip "$OUTSIDE_PREFIX.10" "$RUN-outside" "$RUN-gateway"
 docker network connect --ip "$INTERNAL_PREFIX.10" "$RUN-internal" "$RUN-gateway"
@@ -328,8 +328,8 @@ if ! run_checks staff wait 20; then
   exit 1
 fi
 
-expected_twins="$(docker exec "$RUN-gateway" grep -c -- '-internal$' /usr/local/kong/declarative/kong.yml || true)"
-leftovers="$(docker exec "$RUN-gateway" find /tmp -mindepth 1 -maxdepth 1 ! -name kong-tls)"
+expected_twins="$(docker exec "$RUN-gateway" grep -c 'cluster:' /var/lib/envoy/envoy.yaml || true)"
+leftovers="$(docker exec "$RUN-gateway" find /tmp -mindepth 1 -maxdepth 1 ! -name envoy-tls)"
 if [ -z "$leftovers" ]; then
   echo "  ok    the entrypoint left no temporaries in /tmp (only the TLS directory it owns)"
 else
@@ -337,7 +337,7 @@ else
   failures=$((failures + 1))
 fi
 if [ "${expected_twins:-0}" -eq 0 ]; then
-  echo "  FAIL  the rendered config has no internal twins"
+  echo "  FAIL  the rendered config has no routed clusters"
   failures=$((failures + 1))
 fi
 

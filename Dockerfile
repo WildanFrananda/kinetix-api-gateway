@@ -13,10 +13,6 @@ WORKDIR /app
 
 COPY config/ .
 
-# The config is rendered when the container starts (bin/entrypoint.sh), from the identity public key,
-# issuer and browser origins of the environment it starts in, so this image carries none of them and
-# the same digest runs everywhere. This step only proves, at build time, that the Pkl evaluates and
-# yields a verification key — with a key pair generated here and discarded with this stage.
 RUN set -eu; \
     onion=kinetixgatewaybuildabcdefghijklmnopqrstuvwxyz234567abcde.onion; \
     backoffice=backoffice.build.invalid; \
@@ -32,61 +28,7 @@ RUN set -eu; \
                 -addext "subjectAltName=DNS:$backoffice" \
                 -keyout /tmp/backoffice.key \
                 -out /tmp/backoffice.pem 2>/dev/null; \
-    onion_tls="-p backofficeOnionTlsCertFile=/tmp/onion.pem -p backofficeOnionTlsKeyFile=/tmp/onion.key"; \
-    backoffice_tls="-p backofficeTlsCertFile=/tmp/backoffice.pem -p backofficeTlsKeyFile=/tmp/backoffice.key"; \
-    tls="$onion_tls $backoffice_tls"; \
-    pkl eval -p identityJwtPublicKey="$(cat /tmp/throwaway-public.pem)" \
-             -p jwtIssuer=https://identity.build.invalid \
-             -p corsOrigins= \
-             -p staffRanges=192.0.2.0/24 \
-             -p publicApiHost=api.build.invalid \
-             -p backofficeHost="$backoffice:8443" \
-             -p sellerHost=seller.build.invalid \
-             -p backofficeOnionHost="$onion" \
-             $tls \
-             -f yaml gateway.pkl -o /tmp/kong.yml; \
-    if ! grep -q "rsa_public_key" /tmp/kong.yml; then \
-      echo "the rendered config carries no verification key"; exit 1; \
-    fi; \
-    if ! grep -q "name: ip-restriction" /tmp/kong.yml; then \
-      echo "the rendered config carries no staff gate"; exit 1; \
-    fi; \
-    twins="$(grep -c -- '-internal$' /tmp/kong.yml)"; \
-    onions="$(grep -c -- '-onion-route$' /tmp/kong.yml)"; \
-    guards="$(grep -c 'name: pre-function' /tmp/kong.yml)"; \
-    if [ "$twins" -eq 0 ] || [ "$onions" != 3 ] || [ "$((twins + onions))" != "$guards" ]; then \
-      echo "$twins internal twins, $onions onion routes and $guards listener guards"; exit 1; \
-    fi; \
-    tiles="$(grep -cx -- '    - /tiles/' /tmp/kong.yml || true)"; \
-    tile_limits="$(grep -cx -- '        minute: 1200' /tmp/kong.yml || true)"; \
-    if [ "$tiles" != 2 ] || [ "$tile_limits" != 2 ]; then \
-      echo "$tiles /tiles/ routes and $tile_limits map-tile limits, not one of each on the backoffice host and on the onion"; exit 1; \
-    fi; \
-    certificates="$(sed -n '/^certificates:/,/^[a-z_]/p' /tmp/kong.yml)"; \
-    snis="$(printf '%s\n' "$certificates" | grep -- '^  - name: ' | sort | tr '\n' ' ')"; \
-    if [ "$(printf '%s\n' "$certificates" | grep -c -- '-----BEGIN CERTIFICATE-----')" != 2 ] \
-       || [ "$(printf '%s\n' "$certificates" | grep -cF -- "$(sed -n 2p /tmp/onion.pem)")" != 1 ] \
-       || [ "$(printf '%s\n' "$certificates" | grep -cF -- "$(sed -n 2p /tmp/backoffice.pem)")" != 1 ] \
-       || [ "$snis" != "$(printf '  - name: %s\n' "$backoffice" "$onion" | sort | tr '\n' ' ')" ]; then \
-      echo "the rendered config does not carry the onion's and the backoffice host's certificates, each once, under their own snis"; exit 1; \
-    fi; \
-    refuses() { \
-      if pkl eval -p identityJwtPublicKey="$(cat /tmp/throwaway-public.pem)" \
-                  -p jwtIssuer=https://identity.build.invalid \
-                  -p corsOrigins= \
-                  -p publicApiHost=api.build.invalid \
-                  "$@" \
-                  -f yaml gateway.pkl -o /tmp/kong-without.yml 2>/dev/null; then \
-        echo "the config rendered with only $*"; exit 1; \
-      fi; \
-    }; \
-    refuses $tls -p backofficeHost="$backoffice" -p sellerHost=seller.build.invalid -p backofficeOnionHost="$onion"; \
-    refuses $tls -p staffRanges=192.0.2.0/24 -p sellerHost=seller.build.invalid -p backofficeOnionHost="$onion"; \
-    refuses $tls -p staffRanges=192.0.2.0/24 -p backofficeHost="$backoffice" -p backofficeOnionHost="$onion"; \
-    refuses $tls -p staffRanges=192.0.2.0/24 -p backofficeHost="$backoffice" -p sellerHost=seller.build.invalid; \
-    refuses $backoffice_tls -p staffRanges=192.0.2.0/24 -p backofficeHost="$backoffice" -p sellerHost=seller.build.invalid -p backofficeOnionHost="$onion"; \
-    refuses $onion_tls -p staffRanges=192.0.2.0/24 -p backofficeHost="$backoffice" -p sellerHost=seller.build.invalid -p backofficeOnionHost="$onion"; \
-    refuses $tls -p staffRanges=192.0.2.0/24 -p backofficeHost=192.0.2.1 -p sellerHost=seller.build.invalid -p backofficeOnionHost="$onion"; \
+    tls="-p backofficeOnionTlsCertFile=/tmp/onion.pem -p backofficeOnionTlsKeyFile=/tmp/onion.key -p backofficeTlsCertFile=/tmp/backoffice.pem -p backofficeTlsKeyFile=/tmp/backoffice.key"; \
     pkl eval -p identityJwtPublicKey="$(cat /tmp/throwaway-public.pem)" \
              -p jwtIssuer=https://identity.build.invalid \
              -p corsOrigins= \
@@ -100,42 +42,43 @@ RUN set -eu; \
     if ! grep -q "identity_provider" /tmp/envoy.yaml; then \
       echo "the rendered envoy config carries no verification key"; exit 1; \
     fi; \
-    rm -f /tmp/throwaway.pem /tmp/throwaway-public.pem /tmp/onion.pem /tmp/onion.key /tmp/backoffice.pem /tmp/backoffice.key /tmp/kong.yml /tmp/kong-without.yml /tmp/envoy.yaml
+    if ! grep -q "staff_ranges" /tmp/envoy.yaml; then \
+      echo "the rendered envoy config carries no staff gate"; exit 1; \
+    fi; \
+    refuses() { \
+      if pkl eval -p identityJwtPublicKey="$(cat /tmp/throwaway-public.pem)" \
+                  -p jwtIssuer=https://identity.build.invalid \
+                  -p corsOrigins= \
+                  -p publicApiHost=api.build.invalid \
+                  "$@" \
+                  -f yaml envoy.pkl -o /tmp/envoy-without.yaml 2>/dev/null; then \
+        echo "the config rendered with only $*"; exit 1; \
+      fi; \
+    }; \
+    refuses $tls -p backofficeHost="$backoffice" -p sellerHost=seller.build.invalid -p backofficeOnionHost="$onion"; \
+    refuses $tls -p staffRanges=192.0.2.0/24 -p sellerHost=seller.build.invalid -p backofficeOnionHost="$onion"; \
+    refuses $tls -p staffRanges=192.0.2.0/24 -p backofficeHost="$backoffice" -p backofficeOnionHost="$onion"; \
+    refuses $tls -p staffRanges=192.0.2.0/24 -p backofficeHost="$backoffice" -p sellerHost=seller.build.invalid; \
+    refuses $tls -p staffRanges=192.0.2.0/24 -p backofficeHost=192.0.2.1 -p sellerHost=seller.build.invalid -p backofficeOnionHost="$onion"; \
+    rm -f /tmp/throwaway.pem /tmp/throwaway-public.pem /tmp/onion.pem /tmp/onion.key /tmp/backoffice.pem /tmp/backoffice.key /tmp/envoy.yaml /tmp/envoy-without.yaml
 
-# Pin the Kong minor rather than `latest`: the gateway is the platform's only published
-# surface, and `latest` means a rebuild can change what terminates every request without a
-# single line of this repository changing.
-FROM kong:3.9@sha256:aa4a4687b1330e427ad0d3b27a0606b833894297c78abf1a212edc9ba73c8620
+FROM envoyproxy/envoy:v1.31-latest@sha256:caa5b411be1633b90023592a34a7e010c933d6e60206c758f631485e53006865
 
-# root only long enough to place pkl, the config source and the entrypoint, and to hand the declarative
-# directory to Kong's user, which writes kong.yml there at start. The previous `USER root` was never
-# reversed, so the gateway ran the whole platform's ingress as uid 0.
 USER root
 COPY --from=pkl-builder /usr/local/bin/pkl /usr/local/bin/pkl
-COPY config/gateway.pkl /usr/local/kong/kinetix/gateway.pkl
-COPY config/access_log.conf /usr/local/kong/kinetix/access_log.conf
+COPY config/envoy.pkl /etc/kinetix/envoy/envoy.pkl
+COPY config/envoy/ /etc/kinetix/envoy/envoy/
 COPY bin/entrypoint.sh /usr/local/bin/kinetix-entrypoint.sh
-RUN mkdir -p /usr/local/kong/declarative \
-    && chown kong:kong /usr/local/kong/declarative \
+RUN mkdir -p /var/lib/envoy \
+    && chown -R envoy:envoy /var/lib/envoy /etc/kinetix/envoy \
+    && chmod 0700 /var/lib/envoy \
     && chmod 0755 /usr/local/bin/kinetix-entrypoint.sh /usr/local/bin/pkl
-USER kong
+USER 101:101
 
 ENTRYPOINT ["/usr/local/bin/kinetix-entrypoint.sh"]
-CMD ["kong", "docker-start"]
-
-ENV KONG_DATABASE=off
-ENV KONG_DECLARATIVE_CONFIG=/usr/local/kong/declarative/kong.yml
-ENV KONG_NGINX_HTTP_INCLUDE=/usr/local/kong/kinetix/access_log.conf
-ENV KONG_PROXY_ACCESS_LOG="logs/access.log kinetix"
-
-# The certificate and key are placed by bin/entrypoint.sh from files or from the environment; they
-# are not in this image.
-ENV KONG_PROXY_LISTEN="0.0.0.0:8443 ssl, 0.0.0.0:8000, 0.0.0.0:8081, 0.0.0.0:8444 ssl"
-ENV KONG_ADMIN_LISTEN=off
+CMD ["envoy", "-c", "/var/lib/envoy/envoy.yaml"]
 
 EXPOSE 8443
 
-# `kong health` checks the local processes, not the listener, so it stays correct now that the
-# only listener speaks TLS.
 HEALTHCHECK --interval=10s --timeout=5s --start-period=20s --retries=3 \
-    CMD kong health || exit 1
+    CMD bash -c 'exec 3<>/dev/tcp/127.0.0.1/9901 && printf "GET /ready HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n" >&3 && grep -q "LIVE" <&3'
