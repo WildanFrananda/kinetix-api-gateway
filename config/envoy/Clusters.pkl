@@ -19,6 +19,7 @@ function cluster(name: String, host: String, port: Int): Dynamic =
             lb_endpoints {
               new Dynamic {
                 endpoint {
+                  hostname = host
                   address {
                     socket_address {
                       address = host
