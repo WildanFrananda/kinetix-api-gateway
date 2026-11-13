@@ -30,16 +30,19 @@ function regexMatch(pattern: String): Dynamic = new Dynamic {
 
 function toCluster(clusterName: String): Dynamic = new Dynamic {
   cluster = clusterName
+  auto_host_rewrite = true
 }
 
 function toClusterRewrite(clusterName: String, rewrite: String): Dynamic = new Dynamic {
   cluster = clusterName
   prefix_rewrite = rewrite
+  auto_host_rewrite = true
 }
 
 function toClusterWebsocket(clusterName: String, rewrite: String): Dynamic = new Dynamic {
   cluster = clusterName
   prefix_rewrite = rewrite
+  auto_host_rewrite = true
   upgrade_configs {
     new Dynamic { upgrade_type = "websocket" }
   }
@@ -48,6 +51,7 @@ function toClusterWebsocket(clusterName: String, rewrite: String): Dynamic = new
 function toClusterWebsocketTimeout(clusterName: String, rewrite: String, timeoutSec: Int): Dynamic = new Dynamic {
   cluster = clusterName
   prefix_rewrite = rewrite
+  auto_host_rewrite = true
   upgrade_configs {
     new Dynamic { upgrade_type = "websocket" }
   }

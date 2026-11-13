@@ -79,10 +79,16 @@ listener_matches() {
 reaches() {
   call "$1" "$2" "$3"
   got="$(echoed)"
-  if [ "$status" = 200 ] && [ "$got" = "$4 $1 $5" ] && listener_matches; then
-    ok "$SCHEME $1 $2 -> :$4 $5 (rate limit: ${limit:-none})"
+  got_host="$(jq -r '.request.headers.host // empty' /tmp/body 2>/dev/null)"
+  case "$got_host" in
+    kinetix-api-gateway|kinetix-api-gateway:*) host_ok=false ;;
+    kinetix-*) host_ok=true ;;
+    *) host_ok=false ;;
+  esac
+  if [ "$status" = 200 ] && [ "$got" = "$4 $1 $5" ] && [ "$host_ok" = true ] && listener_matches; then
+    ok "$SCHEME $1 $2 -> :$4 $5 (host: $got_host, rate limit: ${limit:-none})"
   else
-    bad "$SCHEME $1 $2 -> $status ${got:-$(head -c 200 /tmp/body)} rate limit '${limit:-}' (wanted :$4 $1 $5)"
+    bad "$SCHEME $1 $2 -> $status ${got:-$(head -c 200 /tmp/body)} host '$got_host' rate limit '${limit:-}' (wanted :$4 $1 $5)"
   fi
 }
 
