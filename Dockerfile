@@ -69,11 +69,13 @@ COPY --from=pkl-builder /usr/local/bin/pkl /usr/local/bin/pkl
 COPY config/envoy.pkl /etc/kinetix/envoy/envoy.pkl
 COPY config/envoy/ /etc/kinetix/envoy/envoy/
 COPY bin/entrypoint.sh /usr/local/bin/kinetix-entrypoint.sh
-RUN mkdir -p /var/lib/envoy \
-    && chown -R envoy:envoy /var/lib/envoy /etc/kinetix/envoy \
+RUN groupmod -g 1001 envoy \
+    && usermod -u 1001 -g 1001 envoy \
+    && mkdir -p /var/lib/envoy \
+    && chown -R envoy:envoy /var/lib/envoy /etc/kinetix/envoy /home/envoy \
     && chmod 0700 /var/lib/envoy \
     && chmod 0755 /usr/local/bin/kinetix-entrypoint.sh /usr/local/bin/pkl
-USER 101:101
+USER 1001:1001
 
 ENTRYPOINT ["/usr/local/bin/kinetix-entrypoint.sh"]
 CMD ["envoy", "-c", "/var/lib/envoy/envoy.yaml"]

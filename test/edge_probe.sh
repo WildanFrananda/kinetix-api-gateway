@@ -44,6 +44,7 @@ chmod 0755 "$work"
 cleanup() {
   docker rm -f "$RUN-gateway" "$RUN-echo" "$RUN-refused" >/dev/null 2>&1 || true
   docker network rm "$RUN-staff" "$RUN-outside" "$RUN-internal" >/dev/null 2>&1 || true
+  docker volume rm "$RUN-tls" >/dev/null 2>&1 || true
   docker image rm "$PROBE_IMAGE" >/dev/null 2>&1 || true
   rm -rf "$work"
 }
@@ -365,6 +366,37 @@ probe internal onion 27
 
 echo "── which routes answered the plaintext and onion listeners"
 probe staff metrics-plaintext 26
+
+echo "── TLS certificate and 0640 root:1001 key file with ENVOY_CONCURRENCY"
+docker volume create "$RUN-tls" >/dev/null
+docker run --rm \
+  -v "$work:/work:ro" \
+  -v "$RUN-tls:/tls" \
+  "$PROBE_IMAGE" sh -c 'cp /work/tls.pem /tls/fullchain.pem && cp /work/tls.key /tls/privkey.pem && chmod 0644 /tls/fullchain.pem && chmod 0640 /tls/privkey.pem && chown 0:1001 /tls/privkey.pem'
+if docker run --rm \
+  -v "$RUN-tls:/etc/kinetix/tls:ro" \
+  -e KINETIX_IDENTITY_JWT_PUBLIC_KEY_B64="$jwt_key" \
+  -e KINETIX_JWT_ISSUER="$ISSUER" \
+  -e KINETIX_GATEWAY_CORS_ORIGINS= \
+  -e KINETIX_GATEWAY_STAFF_RANGES="$STAFF_PREFIX.0/24" \
+  -e KINETIX_PUBLIC_API_HOST="$API_HOST" \
+  -e KINETIX_BACKOFFICE_HOST="$BACKOFFICE_NAME:8443" \
+  -e KINETIX_SELLER_HOST="$SELLER_NAME" \
+  -e KINETIX_BACKOFFICE_ONION_HOST="$ONION_NAME" \
+  -e KINETIX_STORAGE_HOST="$STORAGE_HOST" \
+  -e KINETIX_GATEWAY_TLS_CERT_FILE=/etc/kinetix/tls/fullchain.pem \
+  -e KINETIX_GATEWAY_TLS_KEY_FILE=/etc/kinetix/tls/privkey.pem \
+  -e KINETIX_BACKOFFICE_ONION_TLS_CERT_B64="$onion_cert" \
+  -e KINETIX_BACKOFFICE_ONION_TLS_KEY_B64="$onion_key" \
+  -e KINETIX_BACKOFFICE_TLS_CERT_B64="$backoffice_cert" \
+  -e KINETIX_BACKOFFICE_TLS_KEY_B64="$backoffice_key" \
+  -e ENVOY_CONCURRENCY=2 \
+  "$IMAGE" true >/dev/null 2>&1; then
+  echo "  ok    the entrypoint validates with a 0640 root:1001 key file and ENVOY_CONCURRENCY"
+else
+  echo "  FAIL  the entrypoint failed with a 0640 root:1001 key file and ENVOY_CONCURRENCY"
+  failures=$((failures + 1))
+fi
 
 if [ "$failures" -ne 0 ]; then
   echo "── gateway log (tail)"
