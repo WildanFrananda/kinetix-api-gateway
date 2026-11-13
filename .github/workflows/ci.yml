@@ -338,3 +338,18 @@ jobs:
             ""|"0"|"root"|"0:0") echo "image runs as root (USER='$user')"; exit 1 ;;
             *) echo "image runs as '$user'" ;;
           esac
+
+  envoy-valid:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install pkl
+        run: |
+          curl -sSL -o /usr/local/bin/pkl \
+            https://github.com/apple/pkl/releases/download/0.32.1/pkl-linux-amd64
+          chmod +x /usr/local/bin/pkl
+          pkl --version
+
+      - name: Validate Envoy configuration
+        run: bash test/validate_envoy.sh
