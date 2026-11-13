@@ -363,9 +363,73 @@ onionTlsListener: Dynamic = new Dynamic {
   }
 }
 
+statusHttpListener: Dynamic = new Dynamic {
+  name = "status_http"
+  address {
+    socket_address {
+      address = "0.0.0.0"
+      port_value = Params.statusPort
+    }
+  }
+  filter_chains {
+    new Dynamic {
+      filters {
+        new Dynamic {
+          name = "envoy.filters.network.http_connection_manager"
+          typed_config {
+            ["@type"] = "type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager"
+            stat_prefix = "status_http"
+            internal_address_config = Filters.internalAddressConfig
+            route_config {
+              name = "status_routes"
+              virtual_hosts {
+                new Dynamic {
+                  name = "status_vhost"
+                  domains = List("*")
+                  routes {
+                    new Dynamic {
+                      match {
+                        path = "/metrics"
+                        headers { Routes.methodHeader("GET") }
+                      }
+                      route {
+                        cluster = "envoy_admin"
+                        regex_rewrite {
+                          pattern {
+                            regex = "^/metrics$"
+                          }
+                          substitution = "/stats/prometheus"
+                        }
+                      }
+                    }
+                    new Dynamic {
+                      match {
+                        path = "/ready"
+                        headers { Routes.methodHeader("GET") }
+                      }
+                      route {
+                        cluster = "envoy_admin"
+                      }
+                    }
+                    Routes.unmatchedRoute
+                  }
+                }
+              }
+            }
+            http_filters {
+              Filters.routerFilter
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
 all: Dynamic = new Dynamic {
   publicTlsListener
   internalHttpListener
   onionRedirectListener
   onionTlsListener
+  statusHttpListener
 }

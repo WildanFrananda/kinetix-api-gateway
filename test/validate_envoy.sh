@@ -73,6 +73,7 @@ ok "Pkl evaluation succeeded (rendered $(wc -l < "$TMP_DIR/envoy-full.yaml") lin
 echo "==> Verifying structural invariants..."
 
 expected_clusters=(
+  "envoy_admin"
   "edge_service"
   "backoffice_app"
   "identity_service"
@@ -104,6 +105,7 @@ expected_listeners=(
   "internal_http"
   "onion_redirect"
   "onion_tls"
+  "status_http"
 )
 
 for listener in "${expected_listeners[@]}"; do
