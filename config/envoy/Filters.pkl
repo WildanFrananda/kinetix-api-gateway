@@ -83,6 +83,7 @@ defaultRateLimitPerRoute: Dynamic = rateLimitPerRoute(100)
 midtransRateLimitPerRoute: Dynamic = rateLimitPerRoute(600)
 mapTileRateLimitPerRoute: Dynamic = rateLimitPerRoute(1200)
 sealPresentationRateLimitPerRoute: Dynamic = rateLimitPerRoute(20)
+sealReportRateLimitPerRoute: Dynamic = rateLimitPerRoute(10)
 
 corsPolicy: Dynamic = new Dynamic {
   ["@type"] = "type.googleapis.com/envoy.extensions.filters.http.cors.v3.CorsPolicy"

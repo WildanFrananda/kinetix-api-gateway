@@ -225,12 +225,15 @@ function sharedApiRoutes(isPublic: Boolean): Dynamic = new Dynamic {
   publicRoute(isPublic, prefixMatch("/api/v1/warehouse"), toClusterRewrite("warehouse_service", "/api/v1"))
 
   when (isPublic) {
+    publicRoute(true, prefixMatch("/ws/v1/events"), toClusterWebsocketTimeout("edge_service", "/ws/v1/events", Params.idleSocketTimeout))
     publicRoute(true, prefixMatch("/ws/v1/matching/driver/websocket"), toClusterWebsocket("matching_service", "/driver/websocket"))
     publicRoute(true, prefixMatch("/ws/v1/matching/driver"), toClusterWebsocket("matching_service", "/driver/websocket"))
   }
   when (!isPublic) {
+    needsTlsRoute(prefixMatch("/ws/v1/events"))
     needsTlsRoute(prefixMatch("/ws/v1/matching/driver"))
   }
+  publicRoute(isPublic, prefixMatch("/ws/v1/matching/events"), toClusterWebsocketTimeout("matching_events_socket", "/ws/v1/events", Params.idleSocketTimeout))
   publicRoute(isPublic, prefixMatch("/ws/v1/matching/merchant/websocket"), toClusterWebsocketTimeout("matching_merchant_socket", "/merchant/websocket", Params.idleSocketTimeout))
   publicRoute(isPublic, prefixMatch("/ws/v1/matching/merchant"), toClusterWebsocketTimeout("matching_merchant_socket", "/merchant/websocket", Params.idleSocketTimeout))
   staffJwtRoute(isPublic, prefixMatch("/api/v1/matching/drivers"), toClusterRewrite("matching_service", "/api/v1/drivers"))
@@ -265,6 +268,9 @@ function sharedApiRoutes(isPublic: Boolean): Dynamic = new Dynamic {
   publicRoute(isPublic, prefixMatch("/api/v1/seal/report-registry"), toCluster("seal_service"))
   jwtRoute(isPublic, prefixMatch("/api/v1/seal/reporters"), toCluster("seal_service"))
   jwtRoute(isPublic, prefixMatch("/api/v1/seal/report-rights"), toCluster("seal_service"))
+  publicRoute(isPublic, prefixMatch("/api/v1/seal/report-categories"), toCluster("seal_service"))
+  apiRoute(isPublic, prefixMethodMatch("/api/v1/seal/reports", "POST"), toCluster("seal_service"), false, false, Filters.sealReportRateLimitPerRoute)
+  publicRoute(isPublic, prefixMatch("/api/v1/seal/reports"), toCluster("seal_service"))
   staffJwtRoute(isPublic, prefixMethodMatch("/api/v1/seal/predicates", "POST"), toCluster("seal_service"))
   staffJwtRoute(isPublic, prefixMethodMatch("/api/v1/seal/predicates", "DELETE"), toCluster("seal_service"))
   publicRoute(isPublic, prefixMatch("/api/v1/seal/predicates"), toCluster("seal_service"))
