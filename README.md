@@ -50,6 +50,9 @@ The **Kinetix API Gateway** is the single entry point for all external client RE
 | `GET /api/v1/seal/registry/snapshot` | `kinetix-seal-service:8012` | HTTP REST (public) | none — the active registry's state, which a holder proves against; the app fetches it on its own schedule |
 | `GET /api/v1/seal/report-registry/snapshot` | `kinetix-seal-service:8012` | HTTP REST (public) | none — the active report registry's state, which a reporter proves against |
 | `POST /api/v1/seal/reporters`, `GET /api/v1/seal/report-rights` | `kinetix-seal-service:8012` | HTTP REST (JWT) | none — a buyer or courier registers the reporter key its device made, and lists the report rights seal granted it |
+| `GET /api/v1/seal/report-categories` | `kinetix-seal-service:8012` | HTTP REST (public) | none — active report category slugs and labels |
+| `POST /api/v1/seal/reports` | `kinetix-seal-service:8012` | HTTP REST (public, 10 a minute per address) | none — relays a proven anonymous merchant report and its plaintext body for sponsor submission; no token, and seal hashes addresses in memory only |
+| `GET /api/v1/seal/reports/{nullifier}` | `kinetix-seal-service:8012` | HTTP REST (public) | none — current settlement status (`submitted` or `confirmed`) for a filed report nullifier |
 | `GET /api/v1/seal/predicates`, `GET /api/v1/seal/predicates/{id}` | `kinetix-seal-service:8012` | HTTP REST (public) | none — the approved predicates and their registry rows, for holders and verifiers; no token |
 | `POST /api/v1/seal/predicates`, `DELETE /api/v1/seal/predicates/{id}` | `kinetix-seal-service:8012` | HTTP REST (JWT, staff network only) | none — an admin approves or withdraws a predicate; seal checks the admin role |
 | `POST`/`DELETE /api/v1/notifications/devices`, `POST /api/v1/notifications/devices/verify` | `kinetix-notification-service:8004` | HTTP REST (JWT) | none — registers, verifies or forgets the caller's own handset for push; the principal is the token's `sub` |

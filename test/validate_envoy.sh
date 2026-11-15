@@ -82,6 +82,7 @@ expected_clusters=(
   "warehouse_service"
   "matching_service"
   "matching_merchant_socket"
+  "matching_events_socket"
   "pricing_service"
   "order_service"
   "review_service"

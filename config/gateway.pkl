@@ -296,6 +296,12 @@ services {
         strip_path = false
         plugins { unroutedOnBrowserAppHost }
       })
+
+      publicOnly(new Dynamic {
+        name = "edge-events-socket-route"
+        paths { "/ws/v1/events" }
+        strip_path = false
+      })
     }
   }
 
@@ -563,6 +569,20 @@ services {
     }
   }
 
+  new {
+    name = "matching-events-socket"
+    url = "http://kinetix-matching-service:4000/ws/v1/events"
+    read_timeout = idleSocketTimeout
+    write_timeout = idleSocketTimeout
+    routes {
+      ...api(new Dynamic {
+        name = "matching-events-socket-route"
+        paths { "/ws/v1/matching/events" }
+        strip_path = true
+      })
+    }
+  }
+
   when (!storageHost.isEmpty) {
     new {
       name = "storage-service"
@@ -771,6 +791,38 @@ services {
         methods { "GET"; "OPTIONS" }
         strip_path = false
         plugins { jwtPlugin }
+      })
+
+      ...api(new Dynamic {
+        name = "seal-report-categories-route"
+        paths { "/api/v1/seal/report-categories" }
+        methods { "GET"; "OPTIONS" }
+        strip_path = false
+      })
+
+      ...api(new Dynamic {
+        name = "seal-reports-route"
+        paths { "/api/v1/seal/reports" }
+        methods { "POST"; "OPTIONS" }
+        strip_path = false
+        plugins {
+          new {
+            name = "rate-limiting"
+            config {
+              minute = 10
+              policy = "local"
+              fault_tolerant = true
+              limit_by = "ip"
+            }
+          }
+        }
+      })
+
+      ...api(new Dynamic {
+        name = "seal-report-reads-route"
+        paths { "/api/v1/seal/reports" }
+        methods { "GET" }
+        strip_path = false
       })
 
       ...api(new Dynamic {

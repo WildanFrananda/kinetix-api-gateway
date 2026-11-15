@@ -12,6 +12,7 @@ def without_twin: [
   "health-route",
   "security-txt-route",
   "matching-driver-socket-route",
+  "edge-events-socket-route",
   "storage-route",
   "edge-backoffice-route",
   "edge-seller-route",
@@ -32,7 +33,7 @@ def per_address_limit: [{minute: 100, policy: "local", fault_tolerant: true, lim
 def map_tile_limit: [{minute: 1200, policy: "local", fault_tolerant: true, limit_by: "ip"}];
 def gate: [.plugins[]? | select(.name == "ip-restriction")];
 def route($name): first(.[] | select(.name == $name)) // {};
-def long_lived: .name as $name | ["edge-service", "matching-merchant-socket"] | any(.[]; . == $name);
+def long_lived: .name as $name | ["edge-service", "matching-merchant-socket", "matching-events-socket"] | any(.[]; . == $name);
 def timeouts: {connect_timeout, read_timeout, write_timeout};
 
 [.services[] as $service | $service.routes[] | . + {service_url: $service.url}] as $routes
@@ -53,8 +54,8 @@ def timeouts: {connect_timeout, read_timeout, write_timeout};
       else empty end),
     (if ($twins | length) == 0 then "no internal twin was rendered" else empty end),
     (if ($jwt_plugins | length) == 0 then "no jwt plugin was rendered" else empty end),
-    (if ([.services[] | select(long_lived)] | length) != 2
-      then "the edge's and the merchant socket's services are not both rendered: \([.services[].name])"
+    (if ([.services[] | select(long_lived)] | length) != 3
+      then "the long-lived socket services are not all rendered: \([.services[].name])"
       else empty end),
     (.services[] | select(long_lived)
       | select(timeouts != {connect_timeout: null, read_timeout: 90000, write_timeout: 90000})

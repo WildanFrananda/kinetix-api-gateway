@@ -65,6 +65,7 @@ all: Dynamic = new Dynamic {
   cluster("warehouse_service", "kinetix-warehouse-service", 3000)
   cluster("matching_service", "kinetix-matching-service", 4000)
   clusterWithTimeout("matching_merchant_socket", "kinetix-matching-service", 4000, Params.idleSocketTimeout)
+  clusterWithTimeout("matching_events_socket", "kinetix-matching-service", 4000, Params.idleSocketTimeout)
   cluster("pricing_service", "kinetix-pricing-service", 6000)
   cluster("order_service", "kinetix-order-service", 8001)
   cluster("review_service", "kinetix-review-service", 8002)
