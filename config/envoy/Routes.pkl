@@ -274,6 +274,7 @@ function sharedApiRoutes(isPublic: Boolean): Dynamic = new Dynamic {
   staffJwtRoute(isPublic, prefixMethodMatch("/api/v1/seal/predicates", "POST"), toCluster("seal_service"))
   staffJwtRoute(isPublic, prefixMethodMatch("/api/v1/seal/predicates", "DELETE"), toCluster("seal_service"))
   publicRoute(isPublic, prefixMatch("/api/v1/seal/predicates"), toCluster("seal_service"))
+  staffJwtRoute(isPublic, prefixMatch("/api/v1/seal/cases"), toCluster("seal_service"))
 
   jwtRoute(isPublic, prefixMatch("/api/v1/notifications/devices"), toCluster("notification_service"))
 

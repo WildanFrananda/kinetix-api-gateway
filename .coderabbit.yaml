@@ -1,0 +1,23 @@
+language: "en-US"
+reviews:
+  profile: "assertive"
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches:
+      - "main"
+      - "development"
+  path_instructions:
+    - path: "config/**"
+      instructions: |
+        - Enforce zero hardcoded secrets, private keys, JWT keys, default staff IP ranges, or fallback hostnames in Pkl or gateway config files.
+        - Verify Kong (`gateway.pkl`) and Envoy (`envoy.pkl`, `envoy/*.pkl`) route definitions stay aligned on paths, HTTP methods, strip/prefix behavior, JWT checks, staff-only IP restrictions, CORS, and rate limiting.
+        - Flag any `/0` CIDR, plain HTTP listener exposure outside local/probe rules, or duplicate/shadowing hostnames.
+    - path: "bin/**"
+      instructions: |
+        - Ensure shell scripts fail-fast (`set -eu` / explicit error exits), never log private keys, onion hostnames, or secrets, and clean up temporary credential files via `trap`.
+    - path: "test/**"
+      instructions: |
+        - Verify route conformance, Envoy validation, and config invariant checks cover both Kong and Envoy behavior without weakening security assertions or hardcoding real secrets.
+chat:
+  auto_reply: true
