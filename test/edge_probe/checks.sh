@@ -404,6 +404,8 @@ POST /api/v1/orders/ORD-1/complete none 8001 /api/v1/orders/ORD-1/complete
 POST /api/v1/orders/ORD-1/Complete none 8001 /api/v1/orders/ORD-1/Complete
 POST /api/v1/seal/predicates token 8012 /api/v1/seal/predicates
 DELETE /api/v1/seal/predicates/0b0e7f6e-1b7a-4c5e-9c1e-1f2a3b4c5d6e token 8012 /api/v1/seal/predicates/0b0e7f6e-1b7a-4c5e-9c1e-1f2a3b4c5d6e
+GET /api/v1/seal/cases token 8012 /api/v1/seal/cases
+GET /api/v1/seal/cases/0b0e7f6e-1b7a-4c5e-9c1e-1f2a3b4c5d6e token 8012 /api/v1/seal/cases/0b0e7f6e-1b7a-4c5e-9c1e-1f2a3b4c5d6e
 ROUTES
 }
 
