@@ -1,4 +1,4 @@
-FROM debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8 AS pkl-builder
+FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc AS pkl-builder
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates openssl && rm -rf /var/lib/apt/lists/*
 
 ARG TARGETARCH
@@ -62,7 +62,7 @@ RUN set -eu; \
     refuses $tls -p staffRanges=192.0.2.0/24 -p backofficeHost=192.0.2.1 -p sellerHost=seller.build.invalid -p backofficeOnionHost="$onion"; \
     rm -f /tmp/throwaway.pem /tmp/throwaway-public.pem /tmp/onion.pem /tmp/onion.key /tmp/backoffice.pem /tmp/backoffice.key /tmp/envoy.yaml /tmp/envoy-without.yaml
 
-FROM envoyproxy/envoy:v1.31-latest@sha256:caa5b411be1633b90023592a34a7e010c933d6e60206c758f631485e53006865
+FROM envoyproxy/envoy:v1.40-latest@sha256:8de97e654644827d62afdbf7e1d3dc9fee01a8690d410dd1c63a30dc6b6cecbb
 
 USER root
 COPY --from=pkl-builder /usr/local/bin/pkl /usr/local/bin/pkl
