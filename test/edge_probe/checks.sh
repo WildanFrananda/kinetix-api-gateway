@@ -78,6 +78,13 @@ listener_matches() {
 
 reaches() {
   call "$1" "$2" "$3"
+  expected_port="$4"
+  if [ "$SCHEME" = https ]; then
+    case "$2" in
+      /api/v1/auth|/api/v1/auth/*|/api/v1/couriers|/api/v1/couriers/*|/api/v1/orders|/api/v1/orders/*|/api/v1/cart|/api/v1/cart/*|/api/v1/payment|/api/v1/payment/*)
+        expected_port=8080 ;;
+    esac
+  fi
   got="$(echoed)"
   got_host="$(jq -r '.request.headers.host // empty' /tmp/body 2>/dev/null)"
   case "$got_host" in
@@ -85,10 +92,10 @@ reaches() {
     kinetix-*) host_ok=true ;;
     *) host_ok=false ;;
   esac
-  if [ "$status" = 200 ] && [ "$got" = "$4 $1 $5" ] && [ "$host_ok" = true ] && listener_matches; then
-    ok "$SCHEME $1 $2 -> :$4 $5 (host: $got_host, rate limit: ${limit:-none})"
+  if [ "$status" = 200 ] && [ "$got" = "$expected_port $1 $5" ] && [ "$host_ok" = true ] && listener_matches; then
+    ok "$SCHEME $1 $2 -> :$expected_port $5 (host: $got_host, rate limit: ${limit:-none})"
   else
-    bad "$SCHEME $1 $2 -> $status ${got:-$(head -c 200 /tmp/body)} host '$got_host' rate limit '${limit:-}' (wanted :$4 $1 $5)"
+    bad "$SCHEME $1 $2 -> $status ${got:-$(head -c 200 /tmp/body)} host '$got_host' rate limit '${limit:-}' (wanted :$expected_port $1 $5)"
   fi
 }
 
@@ -389,19 +396,19 @@ GET /api/v1/matching/drivers/42 token 4000 /api/v1/drivers/42
 GET /api/v1/matching//drivers token 4000 /api/v1/drivers
 GET /api/v1/matching/backoffice/dispatches token 4000 /api/v1/backoffice/dispatches
 POST /api/v1/matching/backoffice/dispatches/9/assign token 4000 /api/v1/backoffice/dispatches/9/assign
-GET /api/v1/orders/search none 8001 /api/v1/orders/search
-GET /api/v1/orders/SEARCH none 8001 /api/v1/orders/SEARCH
-GET /api/v1/orders/search/ none 8001 /api/v1/orders/search/
-GET /api/v1/orders/search?status=PAID,DELIVERED&limit=50 none 8001 /api/v1/orders/search
-GET /api/v1/orders//search none 8001 /api/v1/orders/search
-GET /api/v1/orders/sagas/needs-attention none 8001 /api/v1/orders/sagas/needs-attention
-GET /api/v1/orders/sagas/needs-attention/count none 8001 /api/v1/orders/sagas/needs-attention/count
-GET /api/v1/orders/SAGAS/needs-attention none 8001 /api/v1/orders/SAGAS/needs-attention
-GET /api/v1/orders/returns/needs-attention none 8001 /api/v1/orders/returns/needs-attention
-POST /api/v1/orders/returns/RET-1/reject none 8001 /api/v1/orders/returns/RET-1/reject
-POST /api/v1/orders/Returns/RET-1/Reject none 8001 /api/v1/orders/Returns/RET-1/Reject
-POST /api/v1/orders/ORD-1/complete none 8001 /api/v1/orders/ORD-1/complete
-POST /api/v1/orders/ORD-1/Complete none 8001 /api/v1/orders/ORD-1/Complete
+GET /api/v1/orders/search token 8001 /api/v1/orders/search
+GET /api/v1/orders/SEARCH token 8001 /api/v1/orders/SEARCH
+GET /api/v1/orders/search/ token 8001 /api/v1/orders/search/
+GET /api/v1/orders/search?status=PAID,DELIVERED&limit=50 token 8001 /api/v1/orders/search
+GET /api/v1/orders//search token 8001 /api/v1/orders/search
+GET /api/v1/orders/sagas/needs-attention token 8001 /api/v1/orders/sagas/needs-attention
+GET /api/v1/orders/sagas/needs-attention/count token 8001 /api/v1/orders/sagas/needs-attention/count
+GET /api/v1/orders/SAGAS/needs-attention token 8001 /api/v1/orders/SAGAS/needs-attention
+GET /api/v1/orders/returns/needs-attention token 8001 /api/v1/orders/returns/needs-attention
+POST /api/v1/orders/returns/RET-1/reject token 8001 /api/v1/orders/returns/RET-1/reject
+POST /api/v1/orders/Returns/RET-1/Reject token 8001 /api/v1/orders/Returns/RET-1/Reject
+POST /api/v1/orders/ORD-1/complete token 8001 /api/v1/orders/ORD-1/complete
+POST /api/v1/orders/ORD-1/Complete token 8001 /api/v1/orders/ORD-1/Complete
 POST /api/v1/seal/predicates token 8012 /api/v1/seal/predicates
 DELETE /api/v1/seal/predicates/0b0e7f6e-1b7a-4c5e-9c1e-1f2a3b4c5d6e token 8012 /api/v1/seal/predicates/0b0e7f6e-1b7a-4c5e-9c1e-1f2a3b4c5d6e
 GET /api/v1/seal/cases token 8012 /api/v1/seal/cases
@@ -412,6 +419,8 @@ ROUTES
 public_table() {
   cat <<'ROUTES'
 POST /api/v1/auth/login none 5000 /api/v1/auth/login
+POST /api/v1/auth/2fa/passkey/options none 5000 /api/v1/auth/2fa/passkey/options
+POST /api/v1/auth/2fa/passkey/verify none 5000 /api/v1/auth/2fa/passkey/verify
 POST /api/v1/couriers/register none 5000 /api/v1/couriers/register
 GET /.well-known/jwks.json none 5000 /.well-known/jwks.json
 GET /api/v1/auth/me token 5000 /api/v1/auth/me
@@ -432,10 +441,10 @@ GET /api/v1/matching/driver/me token 4000 /api/v1/driver/me
 POST /api/v1/matching/merchant/orders token 4000 /api/v1/merchant/orders
 POST /api/v1/matching/shipping/options token 4000 /api/v1/shipping/options
 GET /api/v1/pricing/vouchers none 6000 /api/v1/vouchers
-POST /api/v1/cart/items none 8001 /api/v1/cart/items
-POST /api/v1/orders/checkout none 8001 /api/v1/orders/checkout
-GET /api/v1/orders/my-orders none 8001 /api/v1/orders/my-orders
-GET /api/v1/orders/0b0e7f6e-1b7a-4c5e-9c1e-1f2a3b4c5d6e none 8001 /api/v1/orders/0b0e7f6e-1b7a-4c5e-9c1e-1f2a3b4c5d6e
+POST /api/v1/cart/items token 8001 /api/v1/cart/items
+POST /api/v1/orders/checkout token 8001 /api/v1/orders/checkout
+GET /api/v1/orders/my-orders token 8001 /api/v1/orders/my-orders
+GET /api/v1/orders/0b0e7f6e-1b7a-4c5e-9c1e-1f2a3b4c5d6e token 8001 /api/v1/orders/0b0e7f6e-1b7a-4c5e-9c1e-1f2a3b4c5d6e
 GET /api/v1/reviews/products/SKU-1 none 8002 /api/v1/reviews/products/SKU-1
 POST /api/v1/payment/gateway/midtrans/notifications none 8003 /api/v1/payment/gateway/midtrans/notifications
 GET /api/v1/payment/wallet/customer/balance token 8003 /api/v1/payment/wallet/customer/balance
@@ -568,7 +577,7 @@ edge_cases() {
   fi
 
   if [ "$SIDE" = staff ]; then
-    call GET /api/v1/orders/sagas/needs-attention none
+    call GET /api/v1/orders/sagas/needs-attention token
     if [ "$status" = 200 ] \
       && [ "$(header x-ratelimit-limit-minute)" = 100 ] \
       && [ -n "$(header x-request-id)" ]; then
@@ -598,12 +607,12 @@ edge_cases() {
       bad "GET /api/v1/sellers/applications without a token from outside -> $status"
     fi
 
-    refused POST /api/v1/orders/ORD-1/complete none -H "X-Forwarded-For: $STAFF_ADDRESS"
-    refused POST /api/v1/orders/ORD-1/complete none -H "X-Real-IP: $STAFF_ADDRESS"
-    refused GET /api/v1/orders/search none -H "X-Forwarded-For: $STAFF_ADDRESS"
-    refused GET /api/v1/orders/search none -H "X-Real-IP: $STAFF_ADDRESS"
+    refused POST /api/v1/orders/ORD-1/complete token -H "X-Forwarded-For: $STAFF_ADDRESS"
+    refused POST /api/v1/orders/ORD-1/complete token -H "X-Real-IP: $STAFF_ADDRESS"
+    refused GET /api/v1/orders/search token -H "X-Forwarded-For: $STAFF_ADDRESS"
+    refused GET /api/v1/orders/search token -H "X-Real-IP: $STAFF_ADDRESS"
 
-    call GET /api/v1/orders/returns/needs-attention none
+    call GET /api/v1/orders/returns/needs-attention token
     if [ -n "$(jq -r '.request_id // empty' /tmp/body 2>/dev/null)" ] \
       && [ "$(jq -r 'keys | join(",")' /tmp/body 2>/dev/null)" = "message,request_id" ]; then
       ok "the gate's body is Kong's error shape: {message, request_id}, no address"
@@ -1008,7 +1017,7 @@ onion_face() {
 
   target https "$API_HOST" 8444
   misdirected GET /api/v1/products none -H "Host: $INTERNAL_HOST"
-  refused GET /api/v1/orders/sagas/needs-attention none
+  refused GET /api/v1/orders/sagas/needs-attention token
   reaches GET /api/v1/products none 8000 /api/products
   target https "$BACKOFFICE_NAME" 8444 /work/backoffice-ca.pem
   presents_backoffice_certificate
