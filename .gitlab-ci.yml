@@ -3,11 +3,6 @@
 # ⚠ PAIRED FILE: .github/workflows/ci.yml
 # `origin` is GitHub and GitLab is a mirror. Both assert the same things and must be changed
 # together; if they drift, the two platforms disagree about whether the same commit is good.
-#
-# The gateway's config is generated from Apple Pkl, so three things can break independently:
-# the Pkl evaluates but produces invalid Kong config; the Kong config is valid but routes to
-# hostnames nothing answers to; the routes resolve but rewrite the path into a 404. This
-# pipeline separates those.
 
 include:
   - project: 'WildanFrananda/kinetix-infrastructure'
@@ -22,268 +17,35 @@ stages:
 secret-scan:
   extends: .secret-scan
 
-# ── 1. The Pkl evaluates and Kong accepts the result ─────────────────────────────────
+# ── 1. The Pkl evaluates and Envoy accepts the result ────────────────────────────────
 
-config-valid:
+envoy-valid:
   stage: verify
-  image: debian:bookworm-slim
+  image: docker:27-cli
+  services:
+    - docker:27-dind
   variables:
-    ONION_HOST: kinetixgatewayciabcdefghijklmnopqrstuvwxyz234567abcdefgh.onion
+    DOCKER_TLS_CERTDIR: "/certs"
+    DOCKER_HOST: "tcp://docker:2376"
+    DOCKER_TLS_VERIFY: "1"
+    DOCKER_CERT_PATH: "/certs/client"
   before_script:
-    - apt-get update -qq && apt-get install -y -qq --no-install-recommends curl ca-certificates openssl jq
+    - apk add --no-cache bash curl jq openssl
     - |
       case "$(uname -m)" in
-        aarch64|arm64) PKL_ARCH=linux-aarch64; DECK_ARCH=linux_arm64 ;;
-        *)             PKL_ARCH=linux-amd64;   DECK_ARCH=linux_amd64 ;;
+        aarch64|arm64) PKL_ARCH=linux-aarch64 ;;
+        *)             PKL_ARCH=linux-amd64 ;;
       esac
       curl -fsSL -o /usr/local/bin/pkl "https://github.com/apple/pkl/releases/download/0.32.1/pkl-${PKL_ARCH}"
       chmod +x /usr/local/bin/pkl
       pkl --version
-    - |
-      # The release asset carries its version in the filename (deck_1.66.0_linux_amd64.tar.gz),
-      # so there is no stable "latest/download" path — that URL returns an HTML 404 page, which
-      # tar then reports as "gzip: stdin: not in gzip format". Resolve the tag first.
-      # The API response goes to a file before it is parsed. `curl | grep -m1` makes grep exit
-      # at the first match, which closes the pipe and fails curl with exit 23 — a download that
-      # succeeded, reported as an error, and fatal under pipefail.
-      curl -fsSL -o /tmp/deck-release.json https://api.github.com/repos/Kong/deck/releases/latest
-      DECK_VERSION="$(grep -m1 '"tag_name"' /tmp/deck-release.json | cut -d'"' -f4 | sed 's/^v//')"
-      test -n "$DECK_VERSION" || { echo "could not resolve the latest deck release"; exit 1; }
-      # Downloaded to a file, then extracted — not piped. `curl | tar` makes tar close the pipe
-      # as soon as it has the one file it wants, curl fails its write with exit 23, and under
-      # `pipefail` (which GitLab sets) that fails the job for a download that actually worked.
-      curl -fsSL -o /tmp/deck.tgz "https://github.com/Kong/deck/releases/download/v${DECK_VERSION}/deck_${DECK_VERSION}_${DECK_ARCH}.tar.gz"
-      tar -xzf /tmp/deck.tgz -C /usr/local/bin deck
-      rm -f /tmp/deck.tgz
-      deck version
   script:
-    # The container renders this config at start from its environment's key, issuer and origins. CI
-    # supplies throwaway ones: a key pair generated here and discarded, names that resolve nowhere.
-    - |
-      openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out /tmp/throwaway.pem 2>/dev/null
-      openssl pkey -in /tmp/throwaway.pem -pubout -out /tmp/throwaway-public.pem
-      openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 1 \
-                  -subj "/CN=$ONION_HOST" -addext "subjectAltName=DNS:$ONION_HOST" \
-                  -keyout /tmp/onion.key -out /tmp/onion.pem 2>/dev/null
-      openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 1 \
-                  -subj "/CN=backoffice.ci.invalid" -addext "subjectAltName=DNS:backoffice.ci.invalid" \
-                  -keyout /tmp/backoffice.key -out /tmp/backoffice.pem 2>/dev/null
-      render() {
-        pkl eval -p identityJwtPublicKey="$(cat /tmp/throwaway-public.pem)" \
-                 -p jwtIssuer=https://identity.ci.invalid -p corsOrigins="$1" \
-                 -p staffRanges=192.0.2.0/24 -p publicApiHost=api.ci.invalid \
-                 -p backofficeHost=backoffice.ci.invalid:8443 -p sellerHost=seller.ci.invalid \
-                 -p backofficeOnionHost="$ONION_HOST" \
-                 -p backofficeOnionTlsCertFile=/tmp/onion.pem -p backofficeOnionTlsKeyFile=/tmp/onion.key \
-                 -p backofficeTlsCertFile=/tmp/backoffice.pem -p backofficeTlsKeyFile=/tmp/backoffice.key \
-                 -f yaml config/gateway.pkl -o "$2"
-      }
-      render "https://app.ci.invalid" kong.yml
-      render "" kong-no-cors.yml
-      # No browser origins must mean no cors plugin: Kong's cors plugin with no origins answers `*`.
-      if grep -q 'name: cors' kong-no-cors.yml; then
-        echo "an empty origin list still rendered the cors plugin"; exit 1
-      fi
-      # `*` beside a named origin is a contradiction, and must not evaluate.
-      if render "*,https://app.ci.invalid" /tmp/contradiction.yml 2>/dev/null; then
-        echo "'*' combined with another origin was accepted"; exit 1
-      fi
-      echo "config renders with origins, without them, and refuses a contradiction"
-    - |
-      gate() {
-        pkl eval -p identityJwtPublicKey="$(cat /tmp/throwaway-public.pem)" \
-                 -p jwtIssuer=https://identity.ci.invalid -p corsOrigins= \
-                 -p publicApiHost=api.ci.invalid -p backofficeHost=backoffice.ci.invalid:8443 \
-                 -p sellerHost=seller.ci.invalid -p backofficeOnionHost="$ONION_HOST" "$@" \
-                 -p backofficeOnionTlsCertFile=/tmp/onion.pem -p backofficeOnionTlsKeyFile=/tmp/onion.key \
-                 -p backofficeTlsCertFile=/tmp/backoffice.pem -p backofficeTlsKeyFile=/tmp/backoffice.key \
-                 -f yaml config/gateway.pkl -o /tmp/kong-gate.yml 2>/dev/null
-      }
-      if gate; then
-        echo "the config rendered without a staff range"; exit 1
-      fi
-      for range in "" "0.0.0.0/0" "::/0" "not-an-address"; do
-        if gate -p staffRanges="$range"; then
-          echo "the staff range '$range' was accepted"; exit 1
-        fi
-      done
-      gates="$(grep -c 'name: ip-restriction' kong.yml)"
-      if [ "$gates" != 12 ]; then
-        echo "expected the staff gate on 12 routes, found $gates"; exit 1
-      fi
-      if ! grep -qF "body: '{\"status\":\"ok\"}'" kong.yml; then
-        echo "/health answers more than its status"; exit 1
-      fi
-      if ! grep -qF 'Canonical: https://api.ci.invalid/.well-known/security.txt' kong.yml; then
-        echo "security.txt does not name the host it is served from"; exit 1
-      fi
-      echo "the staff gate needs a range, refuses an everyone range and covers 12 routes; /health and security.txt are as published"
-    - |
-      hosts() {
-        pkl eval -p identityJwtPublicKey="$(cat /tmp/throwaway-public.pem)" \
-                 -p jwtIssuer=https://identity.ci.invalid -p corsOrigins= \
-                 -p staffRanges=192.0.2.0/24 -p publicApiHost=api.ci.invalid "$@" \
-                 -p backofficeOnionTlsCertFile=/tmp/onion.pem -p backofficeOnionTlsKeyFile=/tmp/onion.key \
-                 -p backofficeTlsCertFile=/tmp/backoffice.pem -p backofficeTlsKeyFile=/tmp/backoffice.key \
-                 -f yaml config/gateway.pkl -o /tmp/kong-hosts.yml 2>/dev/null
-      }
-      if hosts -p sellerHost=seller.ci.invalid -p backofficeOnionHost="$ONION_HOST"; then
-        echo "the config rendered without a backoffice host"; exit 1
-      fi
-      if hosts -p backofficeHost=backoffice.ci.invalid -p backofficeOnionHost="$ONION_HOST"; then
-        echo "the config rendered without a seller host"; exit 1
-      fi
-      if hosts -p backofficeHost=backoffice.ci.invalid -p sellerHost=seller.ci.invalid; then
-        echo "the config rendered without the backoffice's onion address"; exit 1
-      fi
-      for onion in "" "http://$ONION_HOST" "$ONION_HOST:80" "kinetixgatewayci.onion" \
-                   "$(printf '%s' "$ONION_HOST" | tr a-z A-Z)" "backoffice.ci.invalid"; do
-        if hosts -p backofficeHost=backoffice.ci.invalid -p sellerHost=seller.ci.invalid -p backofficeOnionHost="$onion"; then
-          echo "the onion address '$onion' was accepted"; exit 1
-        fi
-      done
-      if hosts -p backofficeHost="$ONION_HOST" -p sellerHost=seller.ci.invalid -p backofficeOnionHost="$ONION_HOST"; then
-        echo "the onion address was accepted as the backoffice's TLS host too"; exit 1
-      fi
-      for pair in "api.ci.invalid:8443 seller.ci.invalid" "backoffice.ci.invalid seller.ci.invalid:443" \
-                  "backoffice.ci.invalid backoffice.ci.invalid" "kinetix-api-gateway seller.ci.invalid"; do
-        set -- $pair
-        if hosts -p backofficeHost="$1" -p sellerHost="$2" -p backofficeOnionHost="$ONION_HOST"; then
-          echo "the browser-app hosts '$1' and '$2' were accepted"; exit 1
-        fi
-      done
-      for address in "192.0.2.1" "198.51.100.7:8443"; do
-        if hosts -p backofficeHost="$address" -p sellerHost=seller.ci.invalid -p backofficeOnionHost="$ONION_HOST"; then
-          echo "the address '$address' was accepted as the backoffice host: TLS sends no address as SNI, and WebAuthn refuses one"; exit 1
-        fi
-      done
-      if ! hosts -p backofficeHost=backoffice.kinetix.internal -p sellerHost=seller.ci.invalid -p backofficeOnionHost="$ONION_HOST"; then
-        echo "the .internal name backoffice.kinetix.internal was refused as the backoffice host"; exit 1
-      fi
-      if [ "$(grep -cx -- '    - backoffice.kinetix.internal' /tmp/kong-hosts.yml)" != 3 ] \
-         || [ "$(grep -cx -- '  - name: backoffice.kinetix.internal' /tmp/kong-hosts.yml)" != 1 ]; then
-        echo "backoffice.kinetix.internal is not the host of the backoffice's three routes and the SNI of one certificate"; exit 1
-      fi
-      pkl eval -p identityJwtPublicKey="$(cat /tmp/throwaway-public.pem)" \
-               -p jwtIssuer=https://identity.ci.invalid -p corsOrigins="https://app.ci.invalid" \
-               -p staffRanges=192.0.2.0/24 -p publicApiHost=api.ci.invalid \
-               -p backofficeHost=backoffice.ci.invalid:8443 -p sellerHost=seller.ci.invalid \
-               -p backofficeOnionHost="$ONION_HOST" \
-               -p backofficeOnionTlsCertFile=/tmp/onion.pem -p backofficeOnionTlsKeyFile=/tmp/onion.key \
-               -p backofficeTlsCertFile=/tmp/backoffice.pem -p backofficeTlsKeyFile=/tmp/backoffice.key \
-               -p storageHost=storage.ci.invalid -f json config/gateway.pkl -o /tmp/kong.json
-      broken="$(jq -r --arg backoffice backoffice.ci.invalid --arg seller seller.ci.invalid --arg onion "$ONION_HOST" \
-                     -f test/config_invariants.jq /tmp/kong.json)"
-      if [ -n "$broken" ]; then
-        printf '%s\n' "$broken"; exit 1
-      fi
-      echo "/bff/ on the two browser-app hosts goes to the edge, /tiles/ on the backoffice host and on the onion to its app with the map-tile limit and the rest of the backoffice host to its app, nothing else answers there; the onion address has its three guarded routes, served over TLS on 8444 with its own certificate and redirected from 8081; the backoffice host is a name, never an address, and a .internal one renders; every API route has its plaintext twin"
-    - |
-      onion_tls() {
-        pkl eval -p identityJwtPublicKey="$(cat /tmp/throwaway-public.pem)" \
-                 -p jwtIssuer=https://identity.ci.invalid -p corsOrigins= \
-                 -p staffRanges=192.0.2.0/24 -p publicApiHost=api.ci.invalid \
-                 -p backofficeHost=backoffice.ci.invalid:8443 -p sellerHost=seller.ci.invalid \
-                 -p backofficeOnionHost="$ONION_HOST" "$@" \
-                 -p backofficeTlsCertFile=/tmp/backoffice.pem -p backofficeTlsKeyFile=/tmp/backoffice.key \
-                 -f yaml config/gateway.pkl -o /tmp/kong-onion-tls.yml 2>/tmp/onion-tls.err
-      }
-      if onion_tls; then
-        echo "the config rendered without the onion's certificate and key"; exit 1
-      fi
-      if onion_tls -p backofficeOnionTlsCertFile=/tmp/onion.pem; then
-        echo "the config rendered without the onion's key"; exit 1
-      fi
-      if onion_tls -p backofficeOnionTlsKeyFile=/tmp/onion.key; then
-        echo "the config rendered without the onion's certificate"; exit 1
-      fi
-      if onion_tls -p backofficeOnionTlsCertFile=/tmp/onion.pem -p backofficeOnionTlsKeyFile=/tmp/onion.pem; then
-        echo "a certificate was accepted as the onion's private key"; exit 1
-      fi
-      if onion_tls -p backofficeOnionTlsCertFile=/tmp/onion.key -p backofficeOnionTlsKeyFile=/tmp/onion.key; then
-        echo "a private key was accepted as the onion's certificate"; exit 1
-      fi
-      if grep -qF "$(sed -n 2p /tmp/onion.key)" /tmp/onion-tls.err; then
-        echo "refusing a private key as the onion's certificate printed the key"; exit 1
-      fi
-      echo "the onion's certificate and key are required, each must be what it claims, and a refusal never prints the key"
-    - |
-      backoffice_tls() {
-        pkl eval -p identityJwtPublicKey="$(cat /tmp/throwaway-public.pem)" \
-                 -p jwtIssuer=https://identity.ci.invalid -p corsOrigins= \
-                 -p staffRanges=192.0.2.0/24 -p publicApiHost=api.ci.invalid \
-                 -p backofficeHost=backoffice.ci.invalid:8443 -p sellerHost=seller.ci.invalid \
-                 -p backofficeOnionHost="$ONION_HOST" "$@" \
-                 -p backofficeOnionTlsCertFile=/tmp/onion.pem -p backofficeOnionTlsKeyFile=/tmp/onion.key \
-                 -f yaml config/gateway.pkl -o /tmp/kong-backoffice-tls.yml 2>/tmp/backoffice-tls.err
-      }
-      if backoffice_tls; then
-        echo "the config rendered without the backoffice host's certificate and key"; exit 1
-      fi
-      if backoffice_tls -p backofficeTlsCertFile=/tmp/backoffice.pem; then
-        echo "the config rendered without the backoffice host's key"; exit 1
-      fi
-      if backoffice_tls -p backofficeTlsKeyFile=/tmp/backoffice.key; then
-        echo "the config rendered without the backoffice host's certificate"; exit 1
-      fi
-      if backoffice_tls -p backofficeTlsCertFile=/tmp/backoffice.pem -p backofficeTlsKeyFile=/tmp/backoffice.pem; then
-        echo "a certificate was accepted as the backoffice host's private key"; exit 1
-      fi
-      if backoffice_tls -p backofficeTlsCertFile=/tmp/backoffice.key -p backofficeTlsKeyFile=/tmp/backoffice.key; then
-        echo "a private key was accepted as the backoffice host's certificate"; exit 1
-      fi
-      if ! grep -qF "the file given as the backoffice host's TLS certificate does not hold one" /tmp/backoffice-tls.err; then
-        echo "refusing a private key as the backoffice host's certificate did not say so: $(tail -n 3 /tmp/backoffice-tls.err)"; exit 1
-      fi
-      if grep -qF "$(sed -n 2p /tmp/backoffice.key)" /tmp/backoffice-tls.err; then
-        echo "refusing a private key as the backoffice host's certificate printed the key"; exit 1
-      fi
-      echo "the backoffice host's certificate and key are required, each must be what it claims, and a refusal never prints the key"
-    - deck file validate kong.yml
-    - deck file validate kong-no-cors.yml
-    - deck file validate /tmp/kong.json
-    # Every upstream must be a compose service name, never localhost or a host-network escape.
-    # 8443: the health route's own upstream. This said 8080 after the plaintext listener was removed,
-    # which made the exemption match nothing — the paired GitHub file had already moved to 8443.
-    - |
-      if grep -nE 'url: https?://(localhost|host\.docker\.internal|127\.0\.0\.1)' kong.yml \
-         | grep -v '127.0.0.1:8443/health'; then
-        echo "an upstream points outside the compose network"; exit 1
-      fi
-      echo "every upstream is a service name"
-  artifacts:
-    paths:
-      - kong.yml
-    expire_in: 1 week
+    - bash test/validate_envoy.sh
+    - bash test/conformance_envoy.sh
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 
 build-image:
   extends: .build-image
-  needs: [config-valid]
-
-# ── 2. The routes actually reach something ───────────────────────────────────────────
-#
-# Brings the platform up from the single compose file and runs the conformance suite against
-# the running gateway. This is the job that would have caught four services 404-ing.
-
-# `route-conformance` used to live here and has been removed. It is not a gateway-repo
-# concern: it asserts that all EIGHT upstreams resolve and that every declared public path
-# reaches its application, which needs the whole platform running, not one service.
-#
-# As written it could not have passed even once. The clone of kinetix-infrastructure had no
-# credentials ("could not read Username for 'https://gitlab.com'"); past that, `sops` was never
-# installed, so `bin/kinetix-secrets render` would have failed next; past that,
-# `compose up --wait kinetix-api-gateway` pulls in identity, its database and its migrate job
-# through depends_on; and past that, the suite would still fail seven of its eight resolve
-# checks because only the gateway is up. Each fix only exposes the next.
-#
-# Where it belongs instead: run it against the compose lab, which is where the whole platform
-# actually exists.
-#
-#     docker compose -f ../kinetix-infrastructure/compose.yaml up -d --wait
-#     bash test/route_conformance.sh http://localhost:8080
-#
-# If it ever returns to CI it needs its own pipeline in kinetix-infrastructure and a runner
-# that can afford to build nine images — not a shared runner on a 400-minute monthly budget.
+  needs: [envoy-valid]

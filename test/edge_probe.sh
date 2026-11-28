@@ -2,7 +2,7 @@
 set -euo pipefail
 
 IMAGE="${1:?usage: test/edge_probe.sh <gateway image>}"
-KONG_ECHO_IMAGE="${KONG_ECHO_IMAGE:-kong:3.9@sha256:aa4a4687b1330e427ad0d3b27a0606b833894297c78abf1a212edc9ba73c8620}"
+ECHO_IMAGE="${ECHO_IMAGE:-openresty/openresty:1.31.1.1-5-alpine@sha256:646cdd1451ea0d465ee4a5aa42f146228f04101e318ede576f9f08a78d10423d}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUN="kxprobe-$$"
 STAFF_PREFIX="${EDGE_PROBE_STAFF_PREFIX:-10.231.10}"
@@ -56,12 +56,11 @@ RUN apk add --no-cache curl jq openssl
 DOCKERFILE
 
 cp \
-  "$HERE/edge_probe/echo.yml" \
-  "$HERE/edge_probe/tiles.conf" \
+  "$HERE/edge_probe/echo.conf" \
   "$HERE/edge_probe/material.sh" \
   "$HERE/edge_probe/checks.sh" \
   "$work/"
-chmod 0644 "$work/echo.yml" "$work/tiles.conf"
+chmod 0644 "$work/echo.conf"
 docker run --rm \
   --user "$(id -u):$(id -g)" \
   -v "$work:/work" \
@@ -252,18 +251,9 @@ docker run -d --name "$RUN-echo" \
   --network "$RUN-staff" \
   --ip "$STAFF_PREFIX.30" \
   "${aliases[@]}" \
-  -v "$work/echo.yml:/echo.yml:ro" \
-  -v "$work/tiles.conf:/tiles.conf:ro" \
-  -v "$HERE/../config/access_log.conf:/usr/local/kong/kinetix/access_log.conf:ro" \
+  -v "$work/echo.conf:/etc/openresty/echo.conf:ro" \
   -v "$work/app:/srv:ro" \
-  -e KONG_DATABASE=off \
-  -e KONG_DECLARATIVE_CONFIG=/echo.yml \
-  -e KONG_NGINX_HTTP_INCLUDE=/tiles.conf \
-  -e KONG_PROXY_LISTEN="$UPSTREAM_PORTS" \
-  -e KONG_ADMIN_LISTEN=off \
-  -e KONG_ADMIN_GUI_LISTEN=off \
-  --entrypoint /docker-entrypoint.sh \
-  "$KONG_ECHO_IMAGE" kong docker-start >/dev/null
+  "$ECHO_IMAGE" /usr/local/openresty/bin/openresty -g 'daemon off;' -c /etc/openresty/echo.conf >/dev/null
 
 docker run -d --name "$RUN-gateway" \
   --network "$RUN-staff" \

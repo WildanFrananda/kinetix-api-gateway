@@ -1,19 +1,19 @@
 # 🛡️ Kinetix API Gateway (`kinetix-api-gateway`)
 
-The **Kinetix API Gateway** is the single entry point for all external client REST and WebSocket traffic into the **Kinetix Real-Time E-Commerce & Fulfillment Ecosystem**. Built on **Kong Gateway DB-less Mode** (`kong:3.9`, pinned by digest) with a declarative configuration rendered from **Apple Pkl** (`config/gateway.pkl`).
+The **Kinetix API Gateway** is the single entry point for all external client REST and WebSocket traffic into the **Kinetix Real-Time E-Commerce & Fulfillment Ecosystem**. Built on **Envoy Proxy** (`envoyproxy/envoy:v1.31-latest`, pinned by digest) with a declarative configuration rendered from **Apple Pkl** (`config/envoy.pkl`).
 
 ---
 
 ## 🏛️ Stack & Architecture
 
-- **Gateway Engine**: **Kong Gateway (DB-less Mode)**. The public listener is `:8443`, TLS only. A plaintext listener on `:8000` serves only the edge's calls on the Docker network; a TLS listener on `:8444` serves the backoffice's onion address for the `tor` container, and a plaintext listener on `:8081` only redirects that address to HTTPS. None of the three is ever published (see "Internal listener" and "Onion listeners" below). `KONG_PROXY_LISTEN` is `0.0.0.0:8443 ssl, 0.0.0.0:8000, 0.0.0.0:8081, 0.0.0.0:8444 ssl`, and Kong's admin API is off (`KONG_ADMIN_LISTEN=off`): its default listener holds `127.0.0.1:8444`.
-- **Configuration Engine**: **Apple Pkl (`config/gateway.pkl`)** rendered to `/usr/local/kong/declarative/kong.yml` by `bin/entrypoint.sh` **when the container starts**, from `KINETIX_IDENTITY_JWT_PUBLIC_KEY_B64`, `KINETIX_JWT_ISSUER`, `KINETIX_GATEWAY_CORS_ORIGINS`, `KINETIX_GATEWAY_STAFF_RANGES`, `KINETIX_PUBLIC_API_HOST`, `KINETIX_BACKOFFICE_HOST`, `KINETIX_BACKOFFICE_TLS_CERT_B64`, `KINETIX_BACKOFFICE_TLS_KEY_B64`, `KINETIX_BACKOFFICE_ONION_HOST`, `KINETIX_BACKOFFICE_ONION_TLS_CERT_B64`, `KINETIX_BACKOFFICE_ONION_TLS_KEY_B64` and `KINETIX_SELLER_HOST` (and the optional `KINETIX_STORAGE_HOST`). The image carries no key, issuer, origin, address range, host or certificate, so one digest runs in every environment.
-- **TLS**: `KINETIX_GATEWAY_TLS_CERT_FILE` + `_KEY_FILE` (production, Let's Encrypt on disk) or `KINETIX_GATEWAY_TLS_CERT_B64` + `_KEY_B64` (the lab, from the SOPS store) — exactly one pair. The onion address has its own certificate, `KINETIX_BACKOFFICE_ONION_TLS_CERT_B64` + `_KEY_B64` (base64 PEM, issued by our own CA, from the store), required, served to the onion address's SNI only; the entrypoint refuses to start when it is missing, is not a PEM certificate and private key, or does not name `KINETIX_BACKOFFICE_ONION_HOST`, and Kong refuses a key that is not the certificate's. The backoffice host has its own certificate the same way, `KINETIX_BACKOFFICE_TLS_CERT_B64` + `_KEY_B64` (base64 PEM, from a second CA of our own, name-constrained to that host), required, served to the backoffice host's SNI only (its name without the port); the entrypoint refuses to start when it is missing, is not a PEM certificate and private key, or does not name `KINETIX_BACKOFFICE_HOST`. See "Backoffice over WireGuard, by name" below.
-- **Security & Plugins**:
-  - CORS from `KINETIX_GATEWAY_CORS_ORIGINS`, never with credentials, on every TLS route except the browser apps' `/bff/`. Empty leaves the `cors` plugin out, because Kong's plugin with no origins answers `*`.
-  - Rate Limiting (`rate-limiting` plugin, 100 req/min per address and per route; Midtrans' callback 600; the backoffice's map tiles, `/tiles/`, 1200) on every TLS route and the onion routes, none on the internal twins.
-  - Static Health Check route and `/.well-known/security.txt` (`request-termination` plugin).
-  - Admin-only routes accept only the staff network (`ip-restriction`, allowed ranges from `KINETIX_GATEWAY_STAFF_RANGES`, no default). See "Staff-only routes" below and `CLAUDE.md`.
+- **Gateway Engine**: **Envoy Proxy**. The public listener is `:8443`, TLS only. An internal plaintext listener on `:8000` serves only the edge's calls on the Docker network; a TLS listener on `:8444` serves the backoffice's onion address for the `tor` container, a plaintext listener on `:8081` only redirects that address to HTTPS, and `:8100` serves Prometheus metrics internally. None of those internal listeners is published (see "Internal listener" and "Onion listeners" below).
+- **Configuration Engine**: **Apple Pkl (`config/envoy.pkl`)** rendered to `/var/lib/envoy/envoy.yaml` by `bin/entrypoint.sh` **when the container starts**, from `KINETIX_IDENTITY_JWT_PUBLIC_KEY_B64`, `KINETIX_JWT_ISSUER`, `KINETIX_GATEWAY_CORS_ORIGINS`, `KINETIX_GATEWAY_STAFF_RANGES`, `KINETIX_PUBLIC_API_HOST`, `KINETIX_BACKOFFICE_HOST`, `KINETIX_BACKOFFICE_TLS_CERT_B64`, `KINETIX_BACKOFFICE_TLS_KEY_B64`, `KINETIX_BACKOFFICE_ONION_HOST`, `KINETIX_BACKOFFICE_ONION_TLS_CERT_B64`, `KINETIX_BACKOFFICE_ONION_TLS_KEY_B64` and `KINETIX_SELLER_HOST` (and the optional `KINETIX_STORAGE_HOST`). The image carries no key, issuer, origin, address range, host or certificate, so one digest runs in every environment.
+- **TLS**: `KINETIX_GATEWAY_TLS_CERT_FILE` + `_KEY_FILE` (production, Let's Encrypt on disk) or `KINETIX_GATEWAY_TLS_CERT_B64` + `_KEY_B64` (the lab, from the SOPS store) — exactly one pair. The onion address has its own certificate, `KINETIX_BACKOFFICE_ONION_TLS_CERT_B64` + `_KEY_B64` (base64 PEM, issued by our own CA, from the store), required, served to the onion address's SNI only; the entrypoint refuses to start when it is missing, is not a PEM certificate and private key, or does not name `KINETIX_BACKOFFICE_ONION_HOST`, or when key and certificate do not match. The backoffice host has its own certificate the same way, `KINETIX_BACKOFFICE_TLS_CERT_B64` + `_KEY_B64` (base64 PEM, from a second CA of our own, name-constrained to that host), required, served to the backoffice host's SNI only (its name without the port); the entrypoint refuses to start when it is missing, is not a PEM certificate and private key, or does not name `KINETIX_BACKOFFICE_HOST`. See "Backoffice over WireGuard, by name" below.
+- **Security & Filters**:
+  - CORS from `KINETIX_GATEWAY_CORS_ORIGINS`, never with credentials, on the public API virtual host (`public_api_vhost`), never on browser apps' hosts (`/bff/`). Empty leaves the CORS filter out.
+  - Rate Limiting (`envoy.filters.http.local_ratelimit`, 100 req/min per route; Midtrans' callback 600; the backoffice's map tiles, `/tiles/`, 1200) on the public/onion routes, none on the internal listener (`:8000`).
+  - Static Health Check route (`/health`) and `/.well-known/security.txt` (`direct_response`).
+  - Admin-only routes accept only the staff network (`envoy.filters.http.rbac`, allowed ranges from `KINETIX_GATEWAY_STAFF_RANGES`, no default). See "Staff-only routes" below and `CLAUDE.md`.
 
 ---
 
@@ -67,19 +67,19 @@ The **Kinetix API Gateway** is the single entry point for all external client RE
 | any other path on the host `KINETIX_BACKOFFICE_ONION_HOST`, onion TLS listener `:8444` only | `kinetix-backoffice:8080` | HTTPS (from `tor`, the onion's own certificate, no staff gate, no JWT, no CORS) | none — the backoffice's static app |
 | any path on the host `KINETIX_BACKOFFICE_ONION_HOST`, plaintext `:8081` | Internal Static Response | HTTP (from `tor`) | `308` to `https://<onion address><path and query>`, no port; nothing is forwarded |
 
-"(JWT)" means Kong's `jwt` plugin checks the token's signature and `exp` before the request leaves the
-gateway; every service still verifies the token itself. Kong reads the token from `Authorization: Bearer`
+"(JWT)" means Envoy's `jwt_authn` filter checks the token's signature and `exp` before the request leaves the
+gateway; every service still verifies the token itself. Envoy reads the token from `Authorization: Bearer`
 only: a token in a `?jwt=` query or in a cookie is not read, and the request gets `401
 {"message":"Unauthorized"}` with `WWW-Authenticate: Bearer`, as if it carried none. The notary, seal and notification routes accept only the
-methods listed, plus `OPTIONS`: a method a route does not list gets Kong's 404 `no Route matched`, not the
+methods listed, plus `OPTIONS`: a method a route does not list gets Envoy's 404 `no Route matched`, not the
 service's 405. `OPTIONS` is listed because a route that refuses it answers a browser's preflight with that
-404 before the `cors` plugin runs; the `jwt` plugins skip `OPTIONS` (`run_on_preflight = false`).
+404 before the CORS filter runs; `jwt_authn` skips `OPTIONS` (`bypass_cors_preflight = true`).
 
 
 Search sits **under** catalog's prefix deliberately: these are product URLs, and a customer typing
-into a search box should not have to know which service answers. Kong matches plain prefixes
-longest-first, so `/api/v1/products/search` beats `/api/v1/products` — verified against the pinned
-Kong image with both upstreams standing in for themselves, and verified in the other direction too:
+into a search box should not have to know which service answers. Envoy matches routes in declaration order,
+so `/api/v1/products/search` comes before `/api/v1/products` — verified against the pinned
+Envoy image with echo upstreams, and verified in the other direction too:
 with the search route removed, the same request reaches catalog, which reads it as
 `products/<str:sku>/` with sku `search` and answers 404. Not an error anyone would chase — a search
 box that simply finds nothing.
@@ -88,8 +88,8 @@ box that simply finds nothing.
 
 ## 🔐 Staff-only routes
 
-The paths only an admin may call are served by dedicated routes that also check the caller's address: Kong's
-`ip-restriction` allows only `KINETIX_GATEWAY_STAFF_RANGES`, the staff network. Everything else about them
+The paths only an admin may call are served by dedicated routes that also check the caller's address: Envoy's
+RBAC filter allows only `KINETIX_GATEWAY_STAFF_RANGES`, the staff network. Everything else about them
 (upstream, path rewrite, `jwt`, CORS, rate limits) is the route they were split from.
 
 | Paths | Service |
@@ -105,9 +105,9 @@ The paths only an admin may call are served by dedicated routes that also check 
 | every other path on `KINETIX_BACKOFFICE_HOST` (the backoffice's own pages and assets) | backoffice |
 
 From any other address they answer `403 {"message":"This route is not available from your network","request_id":"…"}`.
-On identity's, matching's and seal's, a request without a valid token gets the `jwt` plugin's `401` first. Staff reach
+On JWT-protected staff routes, a request without a valid token gets `jwt_authn`'s `401` first. Staff reach
 them over WireGuard to the server's tunnel address with the public host name
-(`curl --resolve <api host>:443:<tunnel address> https://<api host>/…`); `CLAUDE.md` explains why Kong then sees
+(`curl --resolve <api host>:443:<tunnel address> https://<api host>/…`); `CLAUDE.md` explains why Envoy then sees
 the tunnel address, and what a proxy in front would change. Endpoints that a user or an admin may call are not
 fenced.
 
@@ -116,13 +116,13 @@ fenced.
 ## 🔌 Internal listener (plaintext, for the edge)
 
 `kinetix-edge-service` calls the API at `http://kinetix-api-gateway:8000`, on the Docker network only. Every API
-route above has an internal twin, `<route>-internal`, generated from the same definition: the same paths,
-methods, service, path rewrite and JWT check, without the staff gate, the rate limit or CORS. A twin answers only
+route is rendered onto `:8000` with the same paths, methods, cluster target (`identity_service`, `order_service`,
+`payment_service`, etc. directly so `edge_service` calls do not loop), path rewrite and JWT check, without the staff
+gate, the rate limit or CORS. It answers only
 plaintext requests on port 8000 that name the host `kinetix-api-gateway`; a TLS request that names that host gets
-`421 Misdirected Request`, and a plaintext request for anything else gets Kong's `426`. The seller's socket
-(`/ws/v1/matching/merchant` and `/websocket`) has a twin too: the edge proxies the seller web's WebSocket through
-it, and matching checks the token. `/health`, `security.txt`, the courier socket, storage and `/bff/` have no
-twin. Upstreams see `X-Forwarded-For: <what the edge
+`421 Misdirected Request`, and a plaintext request for anything else gets `426`. The seller's socket
+(`/ws/v1/matching/merchant` and `/websocket`) sits on the internal listener too: the edge proxies the seller web's WebSocket through
+it, and matching checks the token. `/health`, `security.txt`, the courier socket, storage and `/bff/` are public only. Upstreams see `X-Forwarded-For: <what the edge
 sent>, <the edge's address>` and `X-Forwarded-Proto: https` (the browser's hop). Why, and what someone on the network could do with
 it: `CLAUDE.md`, "The internal listener and the twins".
 
@@ -133,15 +133,14 @@ it: `CLAUDE.md`, "The internal listener and the twins".
 The backoffice is reached over Tor (infra `docs/BACKOFFICE.md` §10, and `docs/BACKOFFICE-ONION-TLS.md` for HTTPS): a
 `tor` container runs the onion service with client authorization and forwards its port 443 to
 `kinetix-api-gateway:8444` and its port 80 to `kinetix-api-gateway:8081`. Three routes answer on the host
-`KINETIX_BACKOFFICE_ONION_HOST`: `edge-backoffice-onion-route` (`/bff/` to the edge, `Host` kept),
-`backoffice-tiles-onion-route` (`/tiles/`, the map's archive, to the app) and `backoffice-app-onion-route`
-(everything else to the app). Each starts with a guard: HTTPS that arrived on 8444 is
-served, with the onion's own certificate (a Kong `certificates` entity whose `snis` is the onion address, issued by
+`KINETIX_BACKOFFICE_ONION_HOST`: `/bff/` to the edge (`Host` kept), `/tiles/` (the map's archive) to the app, and
+everything else to the app. HTTPS that arrived on 8444 is
+served, with the onion's own certificate (matched by SNI to the onion address, issued by
 our own CA, so the public listener's certificate is untouched); plaintext that arrived on 8081 gets
 `308 Location: https://<onion address><path and query>` and is not forwarded; anything else gets
 `421 Misdirected Request`. Each carries a per-address limit, 100 a minute on `/bff/` and the app and 1200 on
-`/tiles/`, and every onion visitor shares it; there is no staff gate, because Kong only ever sees the `tor`
-container's address. On 8081 every other host gets Kong's `426` or a twin's `421`; on 8444 another host is
+`/tiles/`, and every onion visitor shares it; there is no staff gate, because Envoy only ever sees the `tor`
+container's address. On 8081 every other host gets `426` or `421`; on 8444 another host is
 served exactly as on 8443. HTTPS adds no secrecy to Tor; it makes the onion a secure origin, so passkeys and the
 `Secure` session cookie work in Chrome and KeePassXC. Why, and what each listener exposes: `CLAUDE.md`, "The onion
 listeners".
@@ -156,7 +155,7 @@ relying party, so passkeys never worked there. It is now a name: `backoffice.kin
 is reserved for private use; no public DNS record, each staff device maps it to the tunnel address in `/etc/hosts`) and
 `backoffice.localhost:8443` in the lab. The gateway refuses an address as the backoffice host.
 
-Its certificate is a second Kong `certificates` entity, `snis` = the backoffice host without its port, issued by a CA of
+Its certificate has `server_names` = the backoffice host without its port, issued by a CA of
 our own name-constrained to that host (no public CA issues for `.internal`, and a public certificate would publish the
 name in Certificate Transparency logs). The public listener's default certificate and the onion's are untouched. The
 backoffice host's routes are unchanged: `/bff/` to the edge with `Host` kept, everything else to the app, both behind the
@@ -170,11 +169,10 @@ WireGuard. Why, and how it is tested: `CLAUDE.md`, "The backoffice host's own ce
 The fleet and dispatch screens draw a street map from one PMTiles archive that the backoffice serves itself, from a
 read-only volume (infra `docs/BACKOFFICE-F5.md`): `/tiles/basemap.pmtiles` by range requests and `/tiles/basemap.json`,
 its manifest. On each backoffice face `/tiles/` has a route of its own to the same `kinetix-backoffice:8080`, path
-unchanged: `backoffice-tiles-route` on `KINETIX_BACKOFFICE_HOST`, behind the staff gate, and
-`backoffice-tiles-onion-route` on the onion address, behind the onion guard. Both carry 1200 requests a minute per
+unchanged: behind the staff gate on `KINETIX_BACKOFFICE_HOST` and on the onion TLS listener. Both carry 1200 requests a minute per
 address instead of the app route's 100: map panning comes in bursts of range requests (a zoom from the whole of
 Indonesia to a street is 100 to 250 of them), and on the onion every visitor shares tor's address. `/tiles` without its
-slash, other spellings and the rest of each face stay the app route's, at 100. Kong passes `Range`, `If-Range` and
+slash, other spellings and the rest of each face stay the app route's, at 100. Envoy passes `Range`, `If-Range` and
 `If-None-Match` through and returns the app's `206`, `304` and `ETag` as sent. Why 1200, and how it is tested:
 `CLAUDE.md`, "The backoffice's map tiles".
 
@@ -182,36 +180,12 @@ slash, other spellings and the rest of each face stay the app route's, at 100. K
 
 ## 🌐 Browser Access (CORS)
 
-When `KINETIX_GATEWAY_CORS_ORIGINS` names origins, the `cors` plugin lets a page read these response headers
+When `KINETIX_GATEWAY_CORS_ORIGINS` names origins, the CORS filter lets a page read these response headers
 besides the CORS-safelisted ones: `X-Request-Id` (the correlation id), `Allow` (on a service's 405),
 `Idempotent-Replayed` (pricing's replay of an earlier create), `Location` (on a 201) and `Retry-After` (on a
-503 from a service, and on Kong's own 429). A page may send `Accept`, `Authorization`, `Content-Type`,
+503 from a service, and on Envoy's own 429). A page may send `Accept`, `Authorization`, `Content-Type`,
 `Idempotency-Key`, `X-Request-Id`, `X-Requested-With`, `X-Kinetix-Client` (the client's name) and
 `X-Firebase-AppCheck` (its App Check proof).
-
----
-
-## 📜 Access Log
-
-Kong's proxy access log uses the `kinetix` format from `config/access_log.conf`, included into nginx's `http`
-block through `KONG_NGINX_HTTP_INCLUDE` and selected by `KONG_PROXY_ACCESS_LOG` (both set in the Dockerfile):
-
-```
-172.21.0.1 [21/Oct/2026:07:28:27 +0000] "GET /api/v1/products/SKU-1 HTTP/1.1" 200 282 "curl/8.7.1" request_id: "7527339d-6441-4f40-a97a-3eb00ac0001a" kong_request_id: "c2fce27814b1560db93aa45d6bf25548"
-```
-
-- The path is logged **without its query string**. The courier and merchant sockets still carry the access
-  token as `?token=`, and Kong's default format (`$request`) wrote it to stdout, journald and Loki. The path
-  comes from `$request_uri` through a `map`, not from `$uri`: on any answer nginx produces through
-  `error_page` (a 502 when an upstream refuses the connection, for example) `$uri` is `/kong_error_handler`.
-- `request_id` is the `X-Request-Id` the `correlation-id` plugin sets or keeps, the id each service logs and
-  the client sees. `kong_request_id` is Kong's own, the `request_id` on Kong's error-log lines and the
-  `X-Kong-Request-Id` header. nginx's `$request_id` is a third id that nothing else carries, so it is not logged.
-- Nothing downstream parses these lines: Promtail ships them unparsed and Grafana parses at query time.
-- Kong's **error log** still carries the full request line and the upstream URL, query string included,
-  whenever nginx logs an error for a request (an upstream that refuses, times out or resets): six lines per
-  failed socket attempt, from the initial try and five retries. No nginx setting changes that format. It
-  ends when the apps send the token in `Sec-WebSocket-Protocol` and matching stops accepting `?token=`.
 
 ---
 
@@ -221,7 +195,7 @@ block through `KONG_NGINX_HTTP_INCLUDE` and selected by `KONG_PROXY_ACCESS_LOG` 
 # 1. Build the image. It carries no key, issuer, origin or certificate.
 docker build -t kinetix-api-gateway .
 
-# 2. Run it. Kong's config and TLS material are produced from the environment at start.
+# 2. Run it. Envoy's config and TLS material are produced from the environment at start.
 docker run -p 8443:8443 \
   -e KINETIX_IDENTITY_JWT_PUBLIC_KEY_B64="$(base64 < identity-public.pem)" \
   -e KINETIX_JWT_ISSUER=https://identity.kinetix.local \

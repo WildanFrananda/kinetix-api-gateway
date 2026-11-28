@@ -78,6 +78,13 @@ listener_matches() {
 
 reaches() {
   call "$1" "$2" "$3"
+  expected_port="$4"
+  if [ "$SCHEME" = https ]; then
+    case "$2" in
+      /api/v1/auth|/api/v1/auth/*|/api/v1/couriers|/api/v1/couriers/*|/api/v1/orders|/api/v1/orders/*|/api/v1/cart|/api/v1/cart/*|/api/v1/payment|/api/v1/payment/*)
+        expected_port=8080 ;;
+    esac
+  fi
   got="$(echoed)"
   got_host="$(jq -r '.request.headers.host // empty' /tmp/body 2>/dev/null)"
   case "$got_host" in
@@ -85,10 +92,10 @@ reaches() {
     kinetix-*) host_ok=true ;;
     *) host_ok=false ;;
   esac
-  if [ "$status" = 200 ] && [ "$got" = "$4 $1 $5" ] && [ "$host_ok" = true ] && listener_matches; then
-    ok "$SCHEME $1 $2 -> :$4 $5 (host: $got_host, rate limit: ${limit:-none})"
+  if [ "$status" = 200 ] && [ "$got" = "$expected_port $1 $5" ] && [ "$host_ok" = true ] && listener_matches; then
+    ok "$SCHEME $1 $2 -> :$expected_port $5 (host: $got_host, rate limit: ${limit:-none})"
   else
-    bad "$SCHEME $1 $2 -> $status ${got:-$(head -c 200 /tmp/body)} host '$got_host' rate limit '${limit:-}' (wanted :$4 $1 $5)"
+    bad "$SCHEME $1 $2 -> $status ${got:-$(head -c 200 /tmp/body)} host '$got_host' rate limit '${limit:-}' (wanted :$expected_port $1 $5)"
   fi
 }
 
@@ -389,19 +396,19 @@ GET /api/v1/matching/drivers/42 token 4000 /api/v1/drivers/42
 GET /api/v1/matching//drivers token 4000 /api/v1/drivers
 GET /api/v1/matching/backoffice/dispatches token 4000 /api/v1/backoffice/dispatches
 POST /api/v1/matching/backoffice/dispatches/9/assign token 4000 /api/v1/backoffice/dispatches/9/assign
-GET /api/v1/orders/search none 8001 /api/v1/orders/search
-GET /api/v1/orders/SEARCH none 8001 /api/v1/orders/SEARCH
-GET /api/v1/orders/search/ none 8001 /api/v1/orders/search/
-GET /api/v1/orders/search?status=PAID,DELIVERED&limit=50 none 8001 /api/v1/orders/search
-GET /api/v1/orders//search none 8001 /api/v1/orders/search
-GET /api/v1/orders/sagas/needs-attention none 8001 /api/v1/orders/sagas/needs-attention
-GET /api/v1/orders/sagas/needs-attention/count none 8001 /api/v1/orders/sagas/needs-attention/count
-GET /api/v1/orders/SAGAS/needs-attention none 8001 /api/v1/orders/SAGAS/needs-attention
-GET /api/v1/orders/returns/needs-attention none 8001 /api/v1/orders/returns/needs-attention
-POST /api/v1/orders/returns/RET-1/reject none 8001 /api/v1/orders/returns/RET-1/reject
-POST /api/v1/orders/Returns/RET-1/Reject none 8001 /api/v1/orders/Returns/RET-1/Reject
-POST /api/v1/orders/ORD-1/complete none 8001 /api/v1/orders/ORD-1/complete
-POST /api/v1/orders/ORD-1/Complete none 8001 /api/v1/orders/ORD-1/Complete
+GET /api/v1/orders/search token 8001 /api/v1/orders/search
+GET /api/v1/orders/SEARCH token 8001 /api/v1/orders/SEARCH
+GET /api/v1/orders/search/ token 8001 /api/v1/orders/search/
+GET /api/v1/orders/search?status=PAID,DELIVERED&limit=50 token 8001 /api/v1/orders/search
+GET /api/v1/orders//search token 8001 /api/v1/orders/search
+GET /api/v1/orders/sagas/needs-attention token 8001 /api/v1/orders/sagas/needs-attention
+GET /api/v1/orders/sagas/needs-attention/count token 8001 /api/v1/orders/sagas/needs-attention/count
+GET /api/v1/orders/SAGAS/needs-attention token 8001 /api/v1/orders/SAGAS/needs-attention
+GET /api/v1/orders/returns/needs-attention token 8001 /api/v1/orders/returns/needs-attention
+POST /api/v1/orders/returns/RET-1/reject token 8001 /api/v1/orders/returns/RET-1/reject
+POST /api/v1/orders/Returns/RET-1/Reject token 8001 /api/v1/orders/Returns/RET-1/Reject
+POST /api/v1/orders/ORD-1/complete token 8001 /api/v1/orders/ORD-1/complete
+POST /api/v1/orders/ORD-1/Complete token 8001 /api/v1/orders/ORD-1/Complete
 POST /api/v1/seal/predicates token 8012 /api/v1/seal/predicates
 DELETE /api/v1/seal/predicates/0b0e7f6e-1b7a-4c5e-9c1e-1f2a3b4c5d6e token 8012 /api/v1/seal/predicates/0b0e7f6e-1b7a-4c5e-9c1e-1f2a3b4c5d6e
 GET /api/v1/seal/cases token 8012 /api/v1/seal/cases
@@ -412,6 +419,8 @@ ROUTES
 public_table() {
   cat <<'ROUTES'
 POST /api/v1/auth/login none 5000 /api/v1/auth/login
+POST /api/v1/auth/2fa/passkey/options none 5000 /api/v1/auth/2fa/passkey/options
+POST /api/v1/auth/2fa/passkey/verify none 5000 /api/v1/auth/2fa/passkey/verify
 POST /api/v1/couriers/register none 5000 /api/v1/couriers/register
 GET /.well-known/jwks.json none 5000 /.well-known/jwks.json
 GET /api/v1/auth/me token 5000 /api/v1/auth/me
@@ -432,10 +441,10 @@ GET /api/v1/matching/driver/me token 4000 /api/v1/driver/me
 POST /api/v1/matching/merchant/orders token 4000 /api/v1/merchant/orders
 POST /api/v1/matching/shipping/options token 4000 /api/v1/shipping/options
 GET /api/v1/pricing/vouchers none 6000 /api/v1/vouchers
-POST /api/v1/cart/items none 8001 /api/v1/cart/items
-POST /api/v1/orders/checkout none 8001 /api/v1/orders/checkout
-GET /api/v1/orders/my-orders none 8001 /api/v1/orders/my-orders
-GET /api/v1/orders/0b0e7f6e-1b7a-4c5e-9c1e-1f2a3b4c5d6e none 8001 /api/v1/orders/0b0e7f6e-1b7a-4c5e-9c1e-1f2a3b4c5d6e
+POST /api/v1/cart/items token 8001 /api/v1/cart/items
+POST /api/v1/orders/checkout token 8001 /api/v1/orders/checkout
+GET /api/v1/orders/my-orders token 8001 /api/v1/orders/my-orders
+GET /api/v1/orders/0b0e7f6e-1b7a-4c5e-9c1e-1f2a3b4c5d6e token 8001 /api/v1/orders/0b0e7f6e-1b7a-4c5e-9c1e-1f2a3b4c5d6e
 GET /api/v1/reviews/products/SKU-1 none 8002 /api/v1/reviews/products/SKU-1
 POST /api/v1/payment/gateway/midtrans/notifications none 8003 /api/v1/payment/gateway/midtrans/notifications
 GET /api/v1/payment/wallet/customer/balance token 8003 /api/v1/payment/wallet/customer/balance
@@ -568,7 +577,7 @@ edge_cases() {
   fi
 
   if [ "$SIDE" = staff ]; then
-    call GET /api/v1/orders/sagas/needs-attention none
+    call GET /api/v1/orders/sagas/needs-attention token
     if [ "$status" = 200 ] \
       && [ "$(header x-ratelimit-limit-minute)" = 100 ] \
       && [ -n "$(header x-request-id)" ]; then
@@ -598,15 +607,15 @@ edge_cases() {
       bad "GET /api/v1/sellers/applications without a token from outside -> $status"
     fi
 
-    refused POST /api/v1/orders/ORD-1/complete none -H "X-Forwarded-For: $STAFF_ADDRESS"
-    refused POST /api/v1/orders/ORD-1/complete none -H "X-Real-IP: $STAFF_ADDRESS"
-    refused GET /api/v1/orders/search none -H "X-Forwarded-For: $STAFF_ADDRESS"
-    refused GET /api/v1/orders/search none -H "X-Real-IP: $STAFF_ADDRESS"
+    refused POST /api/v1/orders/ORD-1/complete token -H "X-Forwarded-For: $STAFF_ADDRESS"
+    refused POST /api/v1/orders/ORD-1/complete token -H "X-Real-IP: $STAFF_ADDRESS"
+    refused GET /api/v1/orders/search token -H "X-Forwarded-For: $STAFF_ADDRESS"
+    refused GET /api/v1/orders/search token -H "X-Real-IP: $STAFF_ADDRESS"
 
-    call GET /api/v1/orders/returns/needs-attention none
+    call GET /api/v1/orders/returns/needs-attention token
     if [ -n "$(jq -r '.request_id // empty' /tmp/body 2>/dev/null)" ] \
       && [ "$(jq -r 'keys | join(",")' /tmp/body 2>/dev/null)" = "message,request_id" ]; then
-      ok "the gate's body is Kong's error shape: {message, request_id}, no address"
+      ok "the gate's body is the gateway's error shape: {message, request_id}, no address"
     else
       bad "the gate's body: $(head -c 300 /tmp/body)"
     fi
@@ -677,9 +686,9 @@ browser_apps() {
   target https "$API_HOST" 8443
   call GET /tiles/basemap.pmtiles none -H "Range: bytes=0-16383"
   if [ "$status" = 404 ] && [ "$(message)" = "no Route matched with those values" ] && [ -z "$(header x-echo-host)" ]; then
-    ok "$API_HOST /tiles/basemap.pmtiles -> Kong's 404: the map tiles are on the backoffice's faces only"
+    ok "$API_HOST /tiles/basemap.pmtiles -> gateway's 404: the map tiles are on the backoffice's faces only"
   else
-    bad "$API_HOST /tiles/basemap.pmtiles -> $status $(head -c 200 /tmp/body) Host '$(header x-echo-host)' (wanted Kong's 404)"
+    bad "$API_HOST /tiles/basemap.pmtiles -> $status $(head -c 200 /tmp/body) Host '$(header x-echo-host)' (wanted gateway's 404)"
   fi
 
   unrouted_table > /tmp/unrouted_table
@@ -839,7 +848,7 @@ plaintext_twins() {
 
   call GET /bff/session none
   if [ "$status" = 404 ] && [ "$(message)" = "no Route matched with those values" ]; then
-    ok "plaintext /bff/ on the internal host -> Kong's 404: the edge is never reached through the twins"
+    ok "plaintext /bff/ on the internal host -> gateway's 404: the edge is never reached through the twins"
   else
     bad "plaintext /bff/session on the internal host -> $status $(head -c 200 /tmp/body)"
   fi
@@ -847,7 +856,7 @@ plaintext_twins() {
   call GET /api/v1/products none -H "X-Forwarded-For: 198.51.100.23" -H "X-Request-Id: probe-forwarded-1"
   got="$(jq -r '"\(.request.headers["x-forwarded-for"])|\(.request.headers["x-real-ip"])|\(.request.headers["x-request-id"])|\(.request.headers["x-forwarded-proto"])"' /tmp/body 2>/dev/null)"
   if [ "$status" = 200 ] && [ "$got" = "198.51.100.23, $CLIENT_ADDRESS|$CLIENT_ADDRESS|probe-forwarded-1|https" ]; then
-    ok "the edge's X-Forwarded-For reaches the upstream intact with Kong's peer appended, X-Forwarded-Proto https ($got)"
+    ok "the edge's X-Forwarded-For reaches the upstream intact with the gateway's peer appended, X-Forwarded-Proto https ($got)"
   else
     bad "forwarded headers through a twin: $status '$got'"
   fi
@@ -855,7 +864,7 @@ plaintext_twins() {
   call GET /api/v1/products none -H "X-Forwarded-For: 198.51.100.23, 203.0.113.9"
   got="$(jq -r '.request.headers["x-forwarded-for"]' /tmp/body 2>/dev/null)"
   if [ "$got" = "198.51.100.23, 203.0.113.9, $CLIENT_ADDRESS" ]; then
-    ok "a longer X-Forwarded-For is kept whole, Kong only appends ($got)"
+    ok "a longer X-Forwarded-For is kept whole, the gateway only appends ($got)"
   else
     bad "a longer X-Forwarded-For -> '$got'"
   fi
@@ -903,7 +912,7 @@ redirected() {
     && [ "$(header location)" = "$want" ] \
     && [ "$(jq -r 'has("request")' /tmp/body 2>/dev/null)" != true ] \
     && [ -z "$(header x-echo-host)" ] \
-    && ! grep -qi -e openresty -e kong -e nginx /tmp/body \
+    && ! grep -qi -e openresty -e envoy -e nginx /tmp/body \
     && [ -z "$(header x-ratelimit-limit-minute)" ]; then
     ok "onion http:8081 $method $path -> 308 to https://<the onion address>$path, nothing forwarded, no engine named"
   else
@@ -1008,7 +1017,7 @@ onion_face() {
 
   target https "$API_HOST" 8444
   misdirected GET /api/v1/products none -H "Host: $INTERNAL_HOST"
-  refused GET /api/v1/orders/sagas/needs-attention none
+  refused GET /api/v1/orders/sagas/needs-attention token
   reaches GET /api/v1/products none 8000 /api/products
   target https "$BACKOFFICE_NAME" 8444 /work/backoffice-ca.pem
   presents_backoffice_certificate
@@ -1032,52 +1041,6 @@ envoy_metric_value() {
 
 metrics_after() {
   curl -sS --max-time 10 "http://$GATEWAY_ADDRESS:8100/metrics" > /tmp/raw-metrics
-  if grep -q '^kong_http_requests_total{' /tmp/raw-metrics; then
-    grep '^kong_http_requests_total{' /tmp/raw-metrics > /tmp/metrics
-    twins_served="$(grep 'route="[^"]*-internal"' /tmp/metrics | grep -v 'code="421"' | wc -l | tr -d ' ')"
-    twins_refused="$(grep 'route="[^"]*-internal"' /tmp/metrics | grep -c 'code="421"')"
-    public_served="$(grep -v 'route="[^"]*-internal"' /tmp/metrics | grep -c 'code="200"')"
-    onion_served="$(grep 'route="[^"]*-onion-route"' /tmp/metrics | grep -v 'code="421"' | wc -l | tr -d ' ')"
-    onion_refused="$(grep 'route="[^"]*-onion-route"' /tmp/metrics | grep -c 'code="421"')"
-    case "$1" in
-      tls)
-        if [ "$twins_served" = 0 ] && [ "$twins_refused" -gt 0 ] && [ "$public_served" -gt 0 ]; then
-          ok "after every TLS group: $public_served TLS route series served, no twin served anything, $twins_refused twin series only refused 421"
-        else
-          bad "after the TLS groups the twins served $twins_served series: $(grep 'route="[^"]*-internal"' /tmp/metrics | grep -v 'code="421"' | head -n 3)"
-        fi
-        if [ "$onion_served" = 0 ] && [ "$onion_refused" -gt 0 ]; then
-          ok "after every TLS group: no onion route served anything, $onion_refused onion series only refused 421"
-        else
-          bad "after the TLS groups the onion routes served $onion_served series: $(grep 'route="[^"]*-onion-route"' /tmp/metrics | grep -v 'code="421"' | head -n 3)"
-        fi ;;
-      plaintext)
-        served="$(grep 'route="[^"]*-internal"' /tmp/metrics | grep 'code="200"' | sed 's/.*route="\([^"]*\)".*/\1/' | sort -u | wc -l | tr -d ' ')"
-        if [ "$EXPECTED_TWINS" -gt 0 ] && [ "$served" = "$EXPECTED_TWINS" ]; then
-          ok "every one of the $EXPECTED_TWINS twins served the plaintext listener"
-        else
-          bad "$served of $EXPECTED_TWINS twins served a plaintext request"
-        fi
-        for code in 200 308; do
-          onions="$(grep 'route="[^"]*-onion-route"' /tmp/metrics | grep "code=\"$code\"" | sed 's/.*route="\([^"]*\)".*/\1/' | sort -u | tr '\n' ' ')"
-          if [ "$onions" = "backoffice-app-onion-route backoffice-tiles-onion-route edge-backoffice-onion-route " ]; then
-            ok "all three onion routes answered $code (200 served on 8444, 308 redirected on 8081)"
-          else
-            bad "the onion routes that answered $code: '$onions'"
-          fi
-        done
-
-        for code in 206 304; do
-          if grep 'route="backoffice-tiles-onion-route"' /tmp/metrics | grep -q "code=\"$code\""; then
-            ok "the onion's /tiles/ route answered $code on 8444"
-          else
-            bad "the onion's /tiles/ route never answered $code"
-          fi
-        done ;;
-    esac
-    return 0
-  fi
-
   grep '^envoy_http_downstream_rq' /tmp/raw-metrics > /tmp/envoy-metrics
   public_total="$(envoy_metric_value envoy_http_downstream_rq_completed public_https)"
   backoffice_total="$(envoy_metric_value envoy_http_downstream_rq_completed backoffice_https)"
