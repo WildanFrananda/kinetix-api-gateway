@@ -62,7 +62,7 @@ RUN set -eu; \
     refuses $tls -p staffRanges=192.0.2.0/24 -p backofficeHost=192.0.2.1 -p sellerHost=seller.build.invalid -p backofficeOnionHost="$onion"; \
     rm -f /tmp/throwaway.pem /tmp/throwaway-public.pem /tmp/onion.pem /tmp/onion.key /tmp/backoffice.pem /tmp/backoffice.key /tmp/envoy.yaml /tmp/envoy-without.yaml
 
-FROM envoyproxy/envoy:v1.31-latest@sha256:caa5b411be1633b90023592a34a7e010c933d6e60206c758f631485e53006865
+FROM envoyproxy/envoy:v1.40-latest@sha256:8de97e654644827d62afdbf7e1d3dc9fee01a8690d410dd1c63a30dc6b6cecbb
 
 USER root
 COPY --from=pkl-builder /usr/local/bin/pkl /usr/local/bin/pkl
