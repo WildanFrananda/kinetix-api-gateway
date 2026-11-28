@@ -615,7 +615,7 @@ edge_cases() {
     call GET /api/v1/orders/returns/needs-attention token
     if [ -n "$(jq -r '.request_id // empty' /tmp/body 2>/dev/null)" ] \
       && [ "$(jq -r 'keys | join(",")' /tmp/body 2>/dev/null)" = "message,request_id" ]; then
-      ok "the gate's body is Kong's error shape: {message, request_id}, no address"
+      ok "the gate's body is the gateway's error shape: {message, request_id}, no address"
     else
       bad "the gate's body: $(head -c 300 /tmp/body)"
     fi
@@ -686,9 +686,9 @@ browser_apps() {
   target https "$API_HOST" 8443
   call GET /tiles/basemap.pmtiles none -H "Range: bytes=0-16383"
   if [ "$status" = 404 ] && [ "$(message)" = "no Route matched with those values" ] && [ -z "$(header x-echo-host)" ]; then
-    ok "$API_HOST /tiles/basemap.pmtiles -> Kong's 404: the map tiles are on the backoffice's faces only"
+    ok "$API_HOST /tiles/basemap.pmtiles -> gateway's 404: the map tiles are on the backoffice's faces only"
   else
-    bad "$API_HOST /tiles/basemap.pmtiles -> $status $(head -c 200 /tmp/body) Host '$(header x-echo-host)' (wanted Kong's 404)"
+    bad "$API_HOST /tiles/basemap.pmtiles -> $status $(head -c 200 /tmp/body) Host '$(header x-echo-host)' (wanted gateway's 404)"
   fi
 
   unrouted_table > /tmp/unrouted_table
@@ -848,7 +848,7 @@ plaintext_twins() {
 
   call GET /bff/session none
   if [ "$status" = 404 ] && [ "$(message)" = "no Route matched with those values" ]; then
-    ok "plaintext /bff/ on the internal host -> Kong's 404: the edge is never reached through the twins"
+    ok "plaintext /bff/ on the internal host -> gateway's 404: the edge is never reached through the twins"
   else
     bad "plaintext /bff/session on the internal host -> $status $(head -c 200 /tmp/body)"
   fi
@@ -856,7 +856,7 @@ plaintext_twins() {
   call GET /api/v1/products none -H "X-Forwarded-For: 198.51.100.23" -H "X-Request-Id: probe-forwarded-1"
   got="$(jq -r '"\(.request.headers["x-forwarded-for"])|\(.request.headers["x-real-ip"])|\(.request.headers["x-request-id"])|\(.request.headers["x-forwarded-proto"])"' /tmp/body 2>/dev/null)"
   if [ "$status" = 200 ] && [ "$got" = "198.51.100.23, $CLIENT_ADDRESS|$CLIENT_ADDRESS|probe-forwarded-1|https" ]; then
-    ok "the edge's X-Forwarded-For reaches the upstream intact with Kong's peer appended, X-Forwarded-Proto https ($got)"
+    ok "the edge's X-Forwarded-For reaches the upstream intact with the gateway's peer appended, X-Forwarded-Proto https ($got)"
   else
     bad "forwarded headers through a twin: $status '$got'"
   fi
@@ -864,7 +864,7 @@ plaintext_twins() {
   call GET /api/v1/products none -H "X-Forwarded-For: 198.51.100.23, 203.0.113.9"
   got="$(jq -r '.request.headers["x-forwarded-for"]' /tmp/body 2>/dev/null)"
   if [ "$got" = "198.51.100.23, 203.0.113.9, $CLIENT_ADDRESS" ]; then
-    ok "a longer X-Forwarded-For is kept whole, Kong only appends ($got)"
+    ok "a longer X-Forwarded-For is kept whole, the gateway only appends ($got)"
   else
     bad "a longer X-Forwarded-For -> '$got'"
   fi
@@ -912,7 +912,7 @@ redirected() {
     && [ "$(header location)" = "$want" ] \
     && [ "$(jq -r 'has("request")' /tmp/body 2>/dev/null)" != true ] \
     && [ -z "$(header x-echo-host)" ] \
-    && ! grep -qi -e openresty -e kong -e nginx /tmp/body \
+    && ! grep -qi -e openresty -e envoy -e nginx /tmp/body \
     && [ -z "$(header x-ratelimit-limit-minute)" ]; then
     ok "onion http:8081 $method $path -> 308 to https://<the onion address>$path, nothing forwarded, no engine named"
   else
@@ -1041,52 +1041,6 @@ envoy_metric_value() {
 
 metrics_after() {
   curl -sS --max-time 10 "http://$GATEWAY_ADDRESS:8100/metrics" > /tmp/raw-metrics
-  if grep -q '^kong_http_requests_total{' /tmp/raw-metrics; then
-    grep '^kong_http_requests_total{' /tmp/raw-metrics > /tmp/metrics
-    twins_served="$(grep 'route="[^"]*-internal"' /tmp/metrics | grep -v 'code="421"' | wc -l | tr -d ' ')"
-    twins_refused="$(grep 'route="[^"]*-internal"' /tmp/metrics | grep -c 'code="421"')"
-    public_served="$(grep -v 'route="[^"]*-internal"' /tmp/metrics | grep -c 'code="200"')"
-    onion_served="$(grep 'route="[^"]*-onion-route"' /tmp/metrics | grep -v 'code="421"' | wc -l | tr -d ' ')"
-    onion_refused="$(grep 'route="[^"]*-onion-route"' /tmp/metrics | grep -c 'code="421"')"
-    case "$1" in
-      tls)
-        if [ "$twins_served" = 0 ] && [ "$twins_refused" -gt 0 ] && [ "$public_served" -gt 0 ]; then
-          ok "after every TLS group: $public_served TLS route series served, no twin served anything, $twins_refused twin series only refused 421"
-        else
-          bad "after the TLS groups the twins served $twins_served series: $(grep 'route="[^"]*-internal"' /tmp/metrics | grep -v 'code="421"' | head -n 3)"
-        fi
-        if [ "$onion_served" = 0 ] && [ "$onion_refused" -gt 0 ]; then
-          ok "after every TLS group: no onion route served anything, $onion_refused onion series only refused 421"
-        else
-          bad "after the TLS groups the onion routes served $onion_served series: $(grep 'route="[^"]*-onion-route"' /tmp/metrics | grep -v 'code="421"' | head -n 3)"
-        fi ;;
-      plaintext)
-        served="$(grep 'route="[^"]*-internal"' /tmp/metrics | grep 'code="200"' | sed 's/.*route="\([^"]*\)".*/\1/' | sort -u | wc -l | tr -d ' ')"
-        if [ "$EXPECTED_TWINS" -gt 0 ] && [ "$served" = "$EXPECTED_TWINS" ]; then
-          ok "every one of the $EXPECTED_TWINS twins served the plaintext listener"
-        else
-          bad "$served of $EXPECTED_TWINS twins served a plaintext request"
-        fi
-        for code in 200 308; do
-          onions="$(grep 'route="[^"]*-onion-route"' /tmp/metrics | grep "code=\"$code\"" | sed 's/.*route="\([^"]*\)".*/\1/' | sort -u | tr '\n' ' ')"
-          if [ "$onions" = "backoffice-app-onion-route backoffice-tiles-onion-route edge-backoffice-onion-route " ]; then
-            ok "all three onion routes answered $code (200 served on 8444, 308 redirected on 8081)"
-          else
-            bad "the onion routes that answered $code: '$onions'"
-          fi
-        done
-
-        for code in 206 304; do
-          if grep 'route="backoffice-tiles-onion-route"' /tmp/metrics | grep -q "code=\"$code\""; then
-            ok "the onion's /tiles/ route answered $code on 8444"
-          else
-            bad "the onion's /tiles/ route never answered $code"
-          fi
-        done ;;
-    esac
-    return 0
-  fi
-
   grep '^envoy_http_downstream_rq' /tmp/raw-metrics > /tmp/envoy-metrics
   public_total="$(envoy_metric_value envoy_http_downstream_rq_completed public_https)"
   backoffice_total="$(envoy_metric_value envoy_http_downstream_rq_completed backoffice_https)"

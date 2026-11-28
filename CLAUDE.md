@@ -1,11 +1,13 @@
 # CLAUDE.md — kinetix-api-gateway
 
 The workspace `AGENTS.md` holds the stack and the verification commands; `README.md` holds the route table. This
-file holds decisions that `config/gateway.pkl` states but cannot explain.
+file holds architectural context (note: Kong Gateway has been retired in favor of Envoy configured via
+`config/envoy.pkl` and `config/envoy/*.pkl`, so legacy `gateway.pkl` / `kong` mentions in historical sections
+below map to the Envoy filter equivalents).
 
 ## One image, every environment: what the environment supplies
 
-`bin/entrypoint.sh` renders `config/gateway.pkl` when the container starts. Lab and production run the same digest
+`bin/entrypoint.sh` renders `config/envoy.pkl` when the container starts. Lab and production run the same digest
 and differ only in these values, all required unless marked:
 
 | Variable | Pkl property | What it is |
